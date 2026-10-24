@@ -305,6 +305,10 @@
           <span class="nav-icon">⚙️</span>
           <span class="nav-label">DRADIS Agentic AI</span>
         </li>
+        <li class="nav-item" data-panel="providers" id="nav-providers">
+          <span class="nav-icon">🔌</span>
+          <span class="nav-label">Providers</span>
+        </li>
         <li class="nav-item" data-panel="ha-mqtt" id="nav-ha-mqtt">
           <span class="nav-icon">📡</span>
           <span class="nav-label">MQTT / Home Assistant</span>
@@ -468,7 +472,7 @@
         </div>
 
         <div class="form-group">
-          <label for="s-history-depth">Conversation history depth</label>
+          <label for="s-history-depth">Conversation history depth <span style="font-weight:400;text-transform:none;letter-spacing:0;color:var(--text-muted)">(scheduled task answers are kept too, so you can reply to them; monitor reports and live alerts are not)</span></label>
           <input type="number" id="s-history-depth" min="1" max="20" style="width:100px">
         </div>
 
@@ -487,16 +491,10 @@
           <input type="number" id="s-tool-call-limit" min="1" max="8" style="width:120px">
         </div>
 
-        <div class="form-group">
-          <label for="s-tpm-limit">Provider tokens per minute <span style="font-weight:400;text-transform:none;letter-spacing:0;color:var(--text-muted)">(the rolling 60-second budget of your plan, counting prompt and reply of every round; 0 = use what DRADIS knows — 8000 for Groq's free tier, no cap elsewhere)</span></label>
-          <input type="number" id="s-tpm-limit" min="0" max="10000000" step="1000" style="width:140px">
-          <small style="margin-top:6px;display:block;color:var(--text-muted)">
-            This is the limit that refuses a task, not the model's context window. When a
-            request would not fit in what is left of the minute, DRADIS waits instead of
-            being refused; when a request could not fit in a whole minute, it trims the
-            request first. Raise it the day you move off the free tier.
-          </small>
-        </div>
+        <p style="font-size:0.8rem; color:var(--text-muted); margin:-4px 0 16px;">
+          Tokens-per-minute and per-request limits are set per provider, in the
+          <b>Providers</b> panel.
+        </p>
 
         <div class="form-group">
           <div class="toggle-row">
@@ -824,6 +822,49 @@
 
         <div class="btn-row">
           <button class="btn-save" id="btn-save-assist">Save</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="panel" id="panel-providers">
+      <div class="form-card">
+        <h2>🔌 Providers</h2>
+        <p style="font-size:0.85rem; color:var(--text-muted); margin-bottom:16px;">
+          API keys are set in the add-on <b>Configuration</b> tab. Here you set the plan
+          behind each key: DRADIS sizes every request to the tightest of the model's
+          context window and these two limits, for the primary and the fallback provider
+          separately.
+        </p>
+        <p style="font-size:0.85rem; color:var(--text-muted); margin-bottom:16px;">
+          <b>Tokens / min</b> — the rolling 60-second budget, prompt and reply of every round.
+          When a request would not fit in what is left of the minute DRADIS waits; when it
+          could not fit in a whole minute, it trims it first. <b>Max tokens / request</b> — the
+          largest single request, whatever the model allows. 0 = the default shown.
+        </p>
+        <p style="font-size:0.85rem; color:var(--text-muted); margin-bottom:16px;">
+          <b>Cloudflare Workers AI</b> has no per-minute budget: it bills <em>Neurons</em>
+          against a daily allowance (10,000 free, reset at 00:00 UTC; then requests fail
+          until midnight and the fallback answers). A typical turn costs 50–250 Neurons
+          depending on the model, so the 32K per-request default keeps one long page from
+          spending a third of the day. Needs <code>cloudflare_account_id</code> and
+          <code>cloudflare_api_token</code>: dashboard → <em>AI → Workers AI → Use REST API</em>
+          → copy the Account ID, then <em>Create a Workers AI API Token</em>.
+        </p>
+        <div style="overflow-x:auto">
+        <table style="width:100%; border-collapse:collapse; font-size:0.85rem">
+          <thead>
+            <tr style="text-align:left; color:var(--text-muted)">
+              <th style="padding:6px 4px">Provider</th>
+              <th style="padding:6px 4px">Tokens / min</th>
+              <th style="padding:6px 4px">Max tokens / request</th>
+              <th style="padding:6px 4px"></th>
+            </tr>
+          </thead>
+          <tbody id="providers-rows"></tbody>
+        </table>
+        </div>
+        <div class="btn-row">
+          <button class="btn-save" id="btn-save-providers">Save</button>
         </div>
       </div>
     </div>
@@ -1915,7 +1956,6 @@ async function loadSettings() {
   document.getElementById("s-tools-usage").checked   = s.tools_usage_enabled === true;
   document.getElementById("s-temperature").value     = s.temperature        ?? 0.2;
   document.getElementById("s-tool-call-limit").value = s.tool_call_limit    ?? 3;
-  document.getElementById("s-tpm-limit").value       = s.tpm_limit          ?? 0;
   document.getElementById("s-tool-errors").checked   = s.tool_errors_enabled !== false;
   const tzVal = s.timezone || "UTC";
   const tzSel = document.getElementById("s-timezone");
@@ -2233,7 +2273,6 @@ document.getElementById("btn-save-settings").addEventListener("click", async () 
     tool_errors_enabled: document.getElementById("s-tool-errors").checked,
     temperature:        parseFloat(document.getElementById("s-temperature").value) || 0,
     tool_call_limit:    parseInt(document.getElementById("s-tool-call-limit").value, 10) || 3,
-    tpm_limit:          parseInt(document.getElementById("s-tpm-limit").value, 10) || 0,
     timezone:                 document.getElementById("s-timezone").value.trim() || "UTC",
   };
   try {
@@ -2444,6 +2483,65 @@ async function runWsSpeedTest() {
 
 document.getElementById("btn-ws-load-models").addEventListener("click", loadWsModels);
 document.getElementById("btn-ws-speedtest").addEventListener("click", runWsSpeedTest);
+
+// ── Providers panel ───────────────────────────────────────────────────────────
+
+async function loadProviders() {
+  const list = await api("GET", "/api/providers");
+  document.getElementById("providers-rows").innerHTML = list.map(p => `
+    <tr data-provider="${p.id}" style="border-top:1px solid var(--border)">
+      <td style="padding:8px 4px">${p.configured ? "🟢" : "⚪"} ${p.label}</td>
+      <td style="padding:8px 4px"><input type="number" class="prov-tpm" min="0" step="1000"
+          value="${p.tpm || 0}" style="width:110px" placeholder="0">
+        <small style="color:var(--text-muted)">default ${p.default_tpm || "none"}</small></td>
+      <td style="padding:8px 4px"><input type="number" class="prov-max" min="0" step="1000"
+          value="${p.max_request || 0}" style="width:110px" placeholder="0">
+        <small style="color:var(--text-muted)">default ${p.default_max_request || "window"}</small></td>
+      <td style="padding:8px 4px">
+        <button class="btn-icon prov-test" ${p.configured ? "" : "disabled title='Key not configured'"}>Test connection</button>
+        <span class="prov-test-result" style="font-size:0.8rem;color:var(--text-muted)"></span></td>
+    </tr>`).join("");
+  document.querySelectorAll("#providers-rows .prov-test").forEach(btn =>
+    btn.addEventListener("click", () => testProvider(btn)));
+}
+
+async function testProvider(btn) {
+  const row    = btn.closest("tr");
+  const result = row.querySelector(".prov-test-result");
+  btn.disabled       = true;
+  result.textContent = "Testing…";
+  result.style.color = "var(--text-muted)";
+  try {
+    const data = await api("POST", `/api/providers/${row.dataset.provider}/test`);
+    result.textContent = (data.ok ? "✅ " : "❌ ") + data.message;
+    result.style.color = data.ok ? "var(--success)" : "var(--danger)";
+  } catch (e) {
+    result.textContent = "❌ " + (e.message || "Connection failed");
+    result.style.color = "var(--danger)";
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+document.getElementById("btn-save-providers").addEventListener("click", async () => {
+  const btn = document.getElementById("btn-save-providers");
+  btn.disabled = true;
+  const limits = {};
+  document.querySelectorAll("#providers-rows tr").forEach(row => {
+    limits[row.dataset.provider] = {
+      tpm:         parseInt(row.querySelector(".prov-tpm").value, 10) || 0,
+      max_request: parseInt(row.querySelector(".prov-max").value, 10) || 0,
+    };
+  });
+  try {
+    await api("PUT", "/api/providers/limits", { limits });
+    showToast("Provider limits saved");
+  } catch (e) {
+    showToast("Error saving provider limits", true);
+  } finally {
+    btn.disabled = false;
+  }
+});
 
 document.getElementById("btn-ws-test").addEventListener("click", async () => {
   const btn    = document.getElementById("btn-ws-test");
@@ -3574,6 +3672,12 @@ async function init() {
     await loadWsSettings();
   } catch (e) {
     console.error("loadWsSettings:", e);
+  }
+
+  try {
+    await loadProviders();
+  } catch (e) {
+    console.error("loadProviders:", e);
   }
 
   try {
@@ -4821,7 +4925,7 @@ function renderLiveMonitorForm(monitor) {
 
       <div class="form-group" id="lm-radius-block">
         <label for="lm-radius">Alert radius (km)</label>
-        <input type="number" id="lm-radius" min="10" max="60" value="${monitor.radius_km || 30}" style="width:80px">
+        <input type="number" id="lm-radius" min="20" max="60" value="${monitor.radius_km || 30}" style="width:80px">
         <small id="lm-radius-desc" style="color:var(--text-muted);margin-top:4px;display:block"></small>
       </div>
 
@@ -4927,7 +5031,7 @@ function renderLiveMonitorForm(monitor) {
           <div style="font-size:0.8rem;line-height:1.5;color:var(--text-muted)">
             <div style="margin-bottom:6px"><b style="color:var(--text)">It measures instead of guessing.</b> The arrival time comes from comparing two consecutive radar images to see which way the rain is actually drifting &mdash; not from a forecast model.</div>
             <div style="margin-bottom:6px"><b style="color:var(--text)">It says when it cannot tell.</b> Scattered summer showers often have no measurable direction of travel at all. When that happens you are told the distance and bearing and nothing more, rather than a made-up arrival time.</div>
-            <div style="margin-bottom:6px"><b style="color:var(--text)">"Rain on you" is measured where you are.</b> The innermost ring is a fifth of the radius &mdash; 4 km with a 20 km radius &mdash; so reaching it means the rain is close, not overhead. That claim now requires an actual reading within 2 km of your position; below drizzle intensity the alert also warns that the echo often evaporates before touching the ground.</div>
+            <div style="margin-bottom:6px"><b style="color:var(--text)">No "rain on you" message.</b> If it is already raining within 2 km of your position when the innermost ring fires, that alert is not sent &mdash; you can see it. Otherwise the innermost ring arrives as <i>Pioggia molto vicina</i> with its distance; below drizzle intensity the alert also warns that the echo often evaporates before touching the ground.</div>
             <div style="margin-bottom:6px"><b style="color:var(--text)">It never reports a drift it cannot resolve.</b> One pixel of the radar image is 1 km and the images are 5 minutes apart, so one pixel of movement is 12 km/h. Anything slower than half of that is a pattern that did not move: it is reported as <i>Pioggia stazionaria</i>, with no compass direction attached to noise.</div>
             <div><b style="color:var(--text)">It cannot flood you.</b> Each step is announced once and once only, exactly like the storm front. Rain that stalls 25 km away all afternoon is mentioned once &mdash; and since 4.4.2 a Telegram upload that times out after the message has already gone through no longer causes the alert to be sent a second time.</div>
           </div>
@@ -5127,8 +5231,8 @@ function renderLiveMonitorForm(monitor) {
     };
     set("lm-rings-label", isRain ? "Updates per rain event" : "Updates per storm");
     set("lm-radius-desc", isRain
-      ? "How close rain must get before you hear about it. <b>30 km</b> is roughly 30 minutes of warning for a front moving at 60 km/h. The monitor quietly <i>watches</i> 1.6× further out to work out where the rain is going, but never alerts you about that outer area."
-      : "How close a storm must get before you hear about it. <b>30 km</b> gives roughly 30–45 minutes of warning for a typical storm. The monitor quietly <i>watches</i> 1.6× further out to work out where the storm is going, but never alerts you about that outer area.");
+      ? "How close rain must get before you hear about it. <b>30 km</b> is roughly 30 minutes of warning for a front moving at 60 km/h. Minimum <b>25 km</b>: the radar picture is already 11–16 minutes old when it arrives, so a smaller radius only tells you about rain that has reached you. The monitor quietly <i>watches</i> 1.6× further out to work out where the rain is going, but never alerts you about that outer area."
+      : "How close a storm must get before you hear about it. <b>30 km</b> gives roughly 30–45 minutes of warning for a typical storm. Minimum <b>20 km</b>: lightning reaches 10–15 km from the cell, so a smaller radius warns you once you are already in range. The monitor quietly <i>watches</i> 1.6× further out to work out where the storm is going, but never alerts you about that outer area.");
     set("lm-rings-desc", isRain
       ? "A <b>hard cap</b> on how many times a single band of rain may update you as it approaches. This is not a sensitivity setting: it does not change when the monitor decides something is coming, only how often it tells you along the way."
       : "A <b>hard cap</b> on how many times a single storm may update you as it approaches. This is not a sensitivity setting: it does not change when the monitor decides something is coming, only how often it tells you along the way.");
@@ -5164,9 +5268,13 @@ function renderLiveMonitorForm(monitor) {
     if (isRing) {
       // The payload is shared with the other live types and still defaults
       // radius_km to 100, which is far outside this algorithm's range.
+      // The floor depends on how old the source's picture is (see
+      // STORM_/RAIN_MIN_RADIUS_KM): rain arrives 11-16 min late, lightning in seconds.
       const r = document.getElementById("lm-radius");
-      r.min = 10; r.max = 60;
-      if (!r.value || Number(r.value) > 60 || Number(r.value) < 10) r.value = 30;
+      const minKm = isRain ? 25 : isHail ? 10 : 20;
+      r.min = minKm; r.max = 60;
+      if (!r.value || Number(r.value) > 60) r.value = 30;
+      else if (Number(r.value) < minKm) r.value = minKm;
       // Storm and rain share these three controls but not their wording: telling
       // a rain monitor's user about "updates per storm" and "strikes coloured by
       // age" describes a feature they did not choose.

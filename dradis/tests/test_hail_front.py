@@ -320,11 +320,13 @@ class TickTest(unittest.IsolatedAsyncioTestCase):
         await mon._tick(notify=True)
         self.assertEqual(mon._blind_since, 0.0)
 
-    async def test_overhead_cell_is_worded_as_over_you(self):
+    async def test_a_cell_already_overhead_is_not_announced(self):
+        """'Hail over you' tells the user what they can see. The level is
+        consumed, so it does not fire again this event."""
         mon = self._monitor(poh_grid([(0, 0, 80)], t=HF.time.time()))
         await mon._tick(notify=True)
-        self.assertIn("sopra di te", self.sent[0])
-        self.assertIn("🚨", self.sent[0])
+        self.assertEqual(self.sent, [])
+        self.assertEqual(mon._tracker.notified_tier, HF.TIER_WARNING)
 
 
 class DispatchTest(unittest.IsolatedAsyncioTestCase):
@@ -383,6 +385,19 @@ class DispatchTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(mon._tracker.notified_tier, HF.TIER_WATCH)   # consumed
         await mon._dispatch(self._alert(HF.TIER_WARNING), T0)
         self.assertEqual(len(sent), 1)
+
+    async def test_an_overhead_peak_is_committed_without_sending(self):
+        sent = []
+
+        async def send(text, photo=None):
+            sent.append(text)
+            return True
+        mon = self._monitor(send)
+        await mon._dispatch(HF.HailAlert(tier=HF.TIER_WARNING, peak_percent=80.0,
+                                         near_percent=80.0, distance_km=1.0,
+                                         bearing_deg=0.0, escalation=False), T0)
+        self.assertEqual(sent, [])
+        self.assertEqual(mon._tracker.notified_tier, HF.TIER_WARNING)
 
     async def test_quiet_hours_hold_back_the_all_clear(self):
         sent = []

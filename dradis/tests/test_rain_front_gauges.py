@@ -161,8 +161,7 @@ class MessageIsUnchanged(unittest.TestCase):
     """
 
     def _lines(self, mon, alert, gauges, **kw):
-        text = mon._format(alert, kw.get("peak_mmh", 6.0), T0,
-                           kw.get("overhead_mmh"), gauges)
+        text = mon._format(alert, kw.get("peak_mmh", 6.0), T0, gauges)
         return [ln for ln in text.split("\n") if not ln.startswith("🎚️")]
 
     def _cases(self, mon, alert, **kw):
@@ -191,21 +190,25 @@ class MessageIsUnchanged(unittest.TestCase):
 
         A station inside the overhead disc reporting nothing is the most
         tempting case for letting the gauge win, and it is refused: the gauge
-        is later than the radar and its zero is ambiguous. The contradiction is
-        shown to the reader on its own line, not resolved on their behalf.
+        is later than the radar and its zero is ambiguous. The innermost alert
+        the radar held back — it already rains there — stays held back.
         """
         mon = monitor()
+        sent = []
+
+        async def confirmed(text, photo=None):
+            sent.append(text)
+            return True
+
+        mon._send = confirmed
         alert = ring_alert(ring=4, ring_edge_km=7.5, front_km=1.0,
                            is_innermost=True)
         dry_next_door = view(reading(mmh=0.0, km=1.2))
         with _Enabled():
-            text = mon._format(alert, 6.0, T0, 5.0, dry_next_door)
-        self.assertIn("Pioggia su di te", text)
-        self.assertIn("Sei sotto la pioggia", text)
-        self.assertEqual(self._lines(mon, alert, dry_next_door,
-                                     peak_mmh=6.0, overhead_mmh=5.0),
-                         self._lines(mon, alert, None,
-                                     peak_mmh=6.0, overhead_mmh=5.0))
+            asyncio.run(mon._dispatch(alert, None, [], T0, origin=ORIGIN,
+                                      effective=ORIGIN, peak_mmh=6.0,
+                                      overhead_mmh=5.0, gauges=dry_next_door))
+        self.assertEqual(sent, [])
 
     def test_all_clear_identical_and_never_delayed(self):
         mon = monitor()
@@ -305,7 +308,7 @@ class FailureIsolation(unittest.TestCase):
                 GS.observe = original
         self.assertIsNone(got)
         with _Enabled():
-            text = mon._format(ring_alert(), 6.0, T0, None, got)
+            text = mon._format(ring_alert(), 6.0, T0, got)
         self.assertIn("Pioggia", text)
         self.assertIn("🎚️", text)
 
@@ -334,7 +337,7 @@ class FailureIsolation(unittest.TestCase):
         mon = monitor()
         before = mon._tracker.to_dict()
         with _Enabled():
-            mon._format(ring_alert(), 6.0, T0, None, view(reading()))
+            mon._format(ring_alert(), 6.0, T0, view(reading()))
             mon._gauge_line(view(reading()))
             mon._gauge_fields(view(reading()))
         self.assertEqual(mon._tracker.to_dict(), before)

@@ -1,5 +1,94 @@
 # CHANGELOG
 
+## [4.17.3] - 2026-10-24
+
+**Switching a live monitor's voice off now takes effect.** Rain, storm, hail and football monitors are
+restarted on save only when a field of their fingerprint changes, so that saving does not throw away
+an event in progress. *Speak alerts* and its quiet hours are not in it — rightly — but the send
+function, which decides whether to speak, was built once at start and kept: the rain monitor went on
+speaking after the voice was switched off.
+
+- **Fix — the send function is rebound on every save**, also when the monitor keeps running
+  (`existing._send = make_send_fn(cfg)` in each manager's `reload`). Voice on/off and voice quiet
+  hours apply from the next alert, with no restart and no lost state.
+
+## [4.17.2] - 2026-10-24
+
+**Only scheduled tasks enter the chat history.** Monitor reports, live alerts and HA monitor messages
+no longer do: a burst of storm rings filled a four-message history and pushed the real conversation
+out. A task's answer is the one you reply to.
+
+- **Change — `save_notification` is called for scheduled tasks only.** Removed from scheduled monitors
+  (raw and LLM), live monitors and HA monitors.
+- **Fix — Cloudflare got Groq's 8K ceiling.** See 4.17.1, provider limits: the `tpm_limit` move is now
+  persisted once at startup and never targets Cloudflare.
+
+## [4.17.1] - 2026-10-24
+
+**You can reply to what DRADIS sends on its own.** A scheduled task's answer, a monitor report or a
+live alert reached Telegram but never the conversation history, so "and tomorrow?" after the
+weather report went to a model that had never seen the report.
+
+- **New — notifications in the chat history.** `state.save_notification(source, text)` stores the
+  message as an assistant turn labelled with its sender (`[Task 'Meteo']`, `[Monitor 'Sisma']`,
+  `[Live monitor 'Pioggia']`, `[HA monitor 'Porta']`), HTML stripped, capped at 1500 characters
+  (the newest message always survives the history budget, whatever its size). Hooked into
+  scheduled tasks, scheduled monitors (raw and LLM), live monitors (unless Telegram certainly
+  refused the send) and HA monitors. Error and fallback notices stay out. Off when
+  *Conversation history* is off.
+
+**Cloudflare Workers AI as a model provider, and limits per provider.** Cloudflare has no
+tokens-per-minute budget: it bills *Neurons* (GPU compute) against a daily allowance, 10,000 free,
+reset at 00:00 UTC. Context windows are still per model (24K to 256K).
+
+- **New — provider `cloudflare`.** Add-on options `cloudflare_account_id` and `cloudflare_api_token`;
+  the account id is part of the base URL (`store.provider_base_url`, used by both the runtime and the
+  Web UI). Curated `CLOUDFLARE_MODELS`: function calling, free plan, with window and roughly how many
+  turns fit in a free day. Their windows are in `MODEL_CONTEXT_WINDOW` ahead of the generic entries —
+  `llama-3.3-70b` is 24K on Cloudflare against 131K on Groq, and the lookup stops at the first hit.
+- **New — max tokens per request.** `core.PROVIDER_MAX_REQUEST`, default 32K for Cloudflare;
+  `ceiling_for` is now the tightest of window, TPM and this cap. The 8K minute used to bound the cost
+  of a turn as a side effect: without it one `read_url` page could fill a 128K window and spend a
+  third of the free day.
+- **New — Providers panel.** Tokens/min and max tokens/request per provider, with *Test connection*
+  (for Cloudflare: account id and token together). `run_dradis` applies the primary's limits and,
+  if the fallback sits elsewhere, the fallback's — one global figure was wrong as soon as the two
+  were on different keys. **Breaking:** the global *Provider tokens per minute* is gone; a non-zero
+  `tpm_limit` is moved once, at startup, to the primary provider — or to the fallback when the primary is
+  Cloudflare, which it cannot have been tuned for — and the old key is dropped
+  (`store.persist_provider_limits`). Evaluated on every read instead, it followed the primary: switching
+  to Cloudflare turned Groq's 8000/min into an 8K ceiling on a provider with no minute at all.
+- **Fix — an exhausted daily allowance is not retried.** `core.daily_quota_exhausted`: Cloudflare's
+  429 for spent Neurons goes straight to the fallback instead of a pointless 2-second retry.
+
+## [4.16.3] - 2026-10-21
+
+**Rain, storm and hail alerts no longer arrive once the weather is already on you.** The radar product
+is published ~10 min after its timestamp and refreshed every 5, so the rain front sees a picture
+11–16 min old; at 30 km/h the front has moved 6–8 km before it exists. With the old 10 km floor
+the rings were 10 / 6.5 / 4 / 2 km — all behind the front when they fired.
+
+- **Fix — per-source minimum radius.** `clamp_radius(radius_km, min_km)`; rain front floor
+  **25 km** (`RAIN_MIN_RADIUS_KM`), storm front **20 km** (`STORM_MIN_RADIUS_KM`), hail unchanged
+  at 10. Storm lag is only 2–4 min (Blitzortung is near real time); its floor comes from lightning
+  reaching 10–15 km from the cell. Saved monitors below the floor are raised at load with a log
+  warning; the Web UI enforces the same minimum per type and explains why.
+- **Fix — no "on you" messages.** *🔵 Pioggia su di te* / *🧭 Sei sotto la pioggia* and
+  *🔴 Temporale sopra di te* / *🧭 Sei sotto il temporale* are gone: if it rains on you, you know.
+  The innermost ring now reads *Pioggia molto vicina* / *Temporale molto vicino* with the usual
+  verdict. When the radar already measures rain within 2 km of you (≥ `min_mmh`), the rain front's
+  innermost alert is committed **without being sent** — the event stays bounded and the all-clear
+  follows as usual.
+- **Fix — no "hail over you" either.** *📍 Massimo X% proprio sopra di te* is gone. When the
+  most likely hail spot is within 2 km (`OVERHEAD_RADIUS_KM`) the alert is committed without
+  being sent — the picture is 11–16 min old, so that hail has already fallen where you can see it.
+  The level is consumed (no repeat this event) and the all-clear follows as usual.
+- **Fix — "ti arriva addosso" next to "movimento non misurabile".** Without a measured velocity the
+  verdict comes from the front's bearing holding steady while it closes. The rain message now says
+  exactly that (*🧭 Si avvicina sempre dalla stessa direzione: probabile che ti raggiunga*) and no
+  longer follows a bearing-based verdict with "movement not measurable".
+- **Tip:** rain front 30–40 km with 3 rings; storm front 30 km with 4.
+
 ## [4.16.2] - 2026-10-14
 
 **A question asked right after another no longer waits half a minute for nothing.** The first round of

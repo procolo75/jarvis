@@ -365,6 +365,41 @@ class ProviderTpmSettingTest(unittest.TestCase):
         self.assertEqual(core.ceiling_for("gpt-oss-120b", "groq"), 8000)
 
 
+class CloudflareTest(unittest.TestCase):
+    """No per-minute budget, a daily Neuron one: the cap is per request."""
+
+    def tearDown(self):
+        core.set_provider_max_request("cloudflare", 0)
+        core.set_provider_max_request("groq", 0)
+
+    def test_no_8k_minute_but_a_32k_request(self):
+        self.assertNotIn("cloudflare", core.PROVIDER_TPM)
+        self.assertEqual(core.ceiling_for("@cf/openai/gpt-oss-120b", "cloudflare"), 32000)
+
+    def test_the_cap_is_a_setting(self):
+        core.set_provider_max_request("cloudflare", 100000)
+        self.assertEqual(core.ceiling_for("@cf/openai/gpt-oss-120b", "cloudflare"), 100000)
+        core.set_provider_max_request("cloudflare", 0)
+        self.assertEqual(core.PROVIDER_MAX_REQUEST["cloudflare"], 32000)
+
+    def test_the_smaller_window_wins(self):
+        # 24K on Cloudflare, 131K on Groq: same family, different window.
+        self.assertEqual(core.ceiling_for("@cf/meta/llama-3.3-70b-instruct-fp8-fast", "cloudflare"), 24000)
+        self.assertEqual(core.context_window_for("llama-3.3-70b-versatile"), 131072)
+
+    def test_a_cap_applies_to_any_provider(self):
+        core.set_provider_max_request("groq", 4000)
+        self.assertEqual(core.ceiling_for("gpt-oss-120b", "groq"), 4000)
+
+    def test_the_daily_quota_is_not_retried(self):
+        class E(Exception):
+            status_code = 429
+        e = E("4006: you have used up your daily free allocation of 10,000 neurons")
+        self.assertTrue(core.daily_quota_exhausted(e))
+        self.assertIsNone(core.retry_after_seconds(e))
+        self.assertEqual(core.retry_after_seconds(E("rate_limit: try again in 1.5s")), 1.5)
+
+
 class RequestTooLargeTest(unittest.TestCase):
     """A 413 is a measurement, not a rate limit."""
 

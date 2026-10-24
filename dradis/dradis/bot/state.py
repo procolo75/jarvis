@@ -29,7 +29,8 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 import core as agent_core
 from car_mode import to_spoken
-from web.store import SETTINGS_DEFAULTS, SETTINGS_FILE
+from web.store import (SETTINGS_DEFAULTS, SETTINGS_FILE, PROVIDER_URL_PARAMS,
+                       migrate_provider_limits)
 from agents.gcal    import GCAL_TOKEN_FILE, gcal_tools
 from agents.gmail   import GMAIL_TOKEN_FILE, gmail_tools
 from agents.gtasks  import GTASKS_TOKEN_FILE, gtasks_tools
@@ -62,8 +63,9 @@ API_KEYS = {
     "github":     _startup_options.get("github_token", ""),
     "gemini":     _startup_options.get("gemini_api_key", ""),
     "groq":       _startup_options.get("groq_api_key", ""),
+    "cloudflare": _startup_options.get("cloudflare_api_token", ""),
 }
-agent_core.setup(API_KEYS)
+agent_core.setup(API_KEYS, {k: _startup_options.get(k, "") for k in PROVIDER_URL_PARAMS})
 
 _groq_client: GroqClient | None = (
     GroqClient(api_key=API_KEYS["groq"]) if API_KEYS.get("groq") else None
@@ -132,10 +134,20 @@ def read_settings() -> dict:
     result = dict(SETTINGS_DEFAULTS)
     try:
         raw = json.loads(SETTINGS_FILE.read_text())
-        result.update({_LEGACY_SETTINGS_MAP.get(k, k): v for k, v in raw.items()})
+        result.update(migrate_provider_limits(
+            {_LEGACY_SETTINGS_MAP.get(k, k): v for k, v in raw.items()}))
     except Exception:
         pass
     return result
+
+
+def apply_provider_limits(settings: dict, provider: str) -> None:
+    """Load one provider's plan into the runtime: its per-minute budget and its
+    largest single request. Called for the primary and again for the fallback —
+    two keys, two plans."""
+    limits = (settings.get("provider_limits") or {}).get(provider) or {}
+    agent_core.set_provider_tpm(provider, limits.get("tpm"))
+    agent_core.set_provider_max_request(provider, limits.get("max_request"))
 
 
 def build_system_prompt() -> str:
@@ -155,6 +167,29 @@ def save_turn(role: str, text: str, history_depth: int) -> None:
     max_msg = history_depth * 2
     while len(_history) > max_msg:
         _history.pop(0)
+
+
+# A scheduled task's answer is an assistant turn like any other: without it, "and
+# tomorrow?" after a task's weather report reaches a model that never saw it.
+# Tasks only — monitor reports and live alerts stay out: a burst of storm rings
+# would push the real conversation out of a four-message history. Kept as plain
+# text (the HTML is for Telegram, not for the model) and capped, because the
+# newest message always survives the history budget whatever its size.
+_NOTIFICATION_MAX_CHARS = 1500
+_HTML_TAG_RE = re.compile(r"</?[a-zA-Z][^>]*>")
+
+
+def save_notification(source: str, text: str, settings: dict | None = None) -> None:
+    """Record an unsolicited message in the chat history, labelled with who sent it."""
+    settings = settings if settings is not None else read_settings()
+    if not settings.get("history_enabled", True):
+        return
+    plain = html.unescape(_HTML_TAG_RE.sub("", text or "")).strip()
+    if not plain:
+        return
+    if len(plain) > _NOTIFICATION_MAX_CHARS:
+        plain = plain[:_NOTIFICATION_MAX_CHARS].rstrip() + " …"
+    save_turn("assistant", f"[{source}]\n{plain}", settings.get("history_depth", 2))
 
 
 # A message count is not a size. Four turns of `history_depth * 2` can be four
@@ -574,10 +609,9 @@ async def run_dradis(
     max_tokens = settings.get("max_tokens") or None
     model      = settings.get("model",    SETTINGS_DEFAULTS["model"])
     provider   = settings.get("provider", SETTINGS_DEFAULTS["provider"])
-    # The per-minute ceiling belongs to the plan behind the API key, so it is a
-    # setting. Applied to the fallback provider too: same key, same bucket.
-    tpm_limit  = settings.get("tpm_limit") or 0
-    agent_core.set_provider_tpm(provider, tpm_limit)
+    # The limits belong to the plan behind each API key, so they are per-provider
+    # settings, applied again below if the fallback sits on another provider.
+    apply_provider_limits(settings, provider)
     tools      = build_tools(settings, selected)
     system     = _system_prompt(settings, tools)
     # Six rounds was a ceiling nobody asked for: every round re-sends the whole
@@ -613,7 +647,7 @@ async def run_dradis(
     if not fb_model:
         return None, False, error, None
     fb_provider = (settings.get("fallback_provider") or "").strip() or provider
-    agent_core.set_provider_tpm(fb_provider, tpm_limit)
+    apply_provider_limits(settings, fb_provider)
     print(f"[DRADIS] {context_label} fallback → {fb_model} ({fb_provider})")
     # A rate limit belongs to the API key, not the model. When the fallback sits on
     # the provider that just refused us, firing the identical payload a heartbeat

@@ -25,6 +25,8 @@ All persistent data is stored in the Supervisor `/data/` folder, which survives 
 
 When **Conversation history** is enabled, the last N exchanges (configurable via **Conversation history depth**) are prepended to each request as context. This buffer is in-memory and resets on restart.
 
+A **scheduled task's answer** is kept in it too (`[Task 'Name']`, plain text, capped at 1500 characters), so you can reply to it. Monitor reports and live alerts are not.
+
 To give DRADIS persistent knowledge about the user (name, preferences, language, etc.), add it directly to the **Agent instructions** field in the Web UI Settings tab.
 
 ---

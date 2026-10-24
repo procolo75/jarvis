@@ -387,12 +387,25 @@ class MessageTest(unittest.TestCase):
         mon._tracker.track_verdict(T0, 270.0, 20.0)
         line = mon._track_line(ring_alert(track=TRACK_CLOSING))
         self.assertNotIn("min", line)
-        self.assertIn("Rotta costante", line)
+        self.assertIn("stessa direzione", line)
 
     def test_the_field_line_states_when_motion_is_unmeasurable(self):
         mon = monitor()
         mon._field = None
         self.assertIn("non misurabile", mon._field_line())
+
+    def test_a_bearing_verdict_is_not_followed_by_not_measurable(self):
+        """THE message that read as a contradiction: 'ti arriva addosso' over
+        'movimento non misurabile'. A closing verdict without a velocity comes
+        from the bearing alone, and the message no longer takes it back."""
+        mon = monitor()
+        mon._grid_t = T0
+        mon._field = None
+        mon._tracker.set_motion(None)
+        text = mon._format(ring_alert(track=TRACK_CLOSING), 4.0, T0)
+        self.assertIn("stessa direzione", text)
+        self.assertNotIn("non misurabile", text)
+        self.assertNotIn("addosso", text)
 
     def test_a_confident_standstill_is_worded_as_such(self):
         mon = monitor()
@@ -443,46 +456,15 @@ class MessageTest(unittest.TestCase):
         self.assertIn("Anello 2/4", text)
         self.assertIn("Radar delle", text)
 
-    def test_the_innermost_ring_alone_does_not_claim_rain_on_you(self):
-        """THE alert that failed in the field: the innermost ring is a fifth of
-        the radius — 4 km at radius 20 — and reaching it says the front is close,
-        not that anything is falling on you. It announced 'Pioggia su di te' over
-        a dry pavement, with the radar echo genuinely there and genuinely aloft."""
+    def test_the_innermost_ring_names_a_distance_not_your_pavement(self):
         mon = monitor()
         mon._grid_t = T0
         text = mon._format(ring_alert(ring=4, ring_edge_km=6.0, front_km=3.0,
-                                      is_innermost=True), 4.0, T0,
-                           0.0)                        # nothing over the observer
+                                      is_innermost=True), 4.0, T0)
+        self.assertIn("Pioggia molto vicina", text)
         self.assertNotIn("su di te", text)
         self.assertNotIn("Sei sotto la pioggia", text)
         self.assertIn("3 km", text)
-
-    def test_rain_measured_overhead_is_stated_as_such(self):
-        mon = monitor()
-        mon._grid_t = T0
-        text = mon._format(ring_alert(ring=4, ring_edge_km=6.0, front_km=1.0,
-                                      is_innermost=True), 4.0, T0,
-                           3.2)                        # measured where you are
-        self.assertIn("Pioggia su di te", text)
-        self.assertIn("Sei sotto la pioggia", text)
-
-    def test_no_coverage_overhead_is_not_read_as_either_answer(self):
-        """`None` is the radar seeing nothing there. It must not become a claim,
-        and it must not become a denial of one."""
-        mon = monitor()
-        mon._grid_t = T0
-        text = mon._format(ring_alert(ring=4, ring_edge_km=6.0, front_km=3.0,
-                                      is_innermost=True), 4.0, T0, None)
-        self.assertNotIn("Sei sotto la pioggia", text)
-
-    def test_overhead_below_the_monitors_own_threshold_does_not_count(self):
-        """Otherwise the two halves of one message would disagree about what
-        counts as rain."""
-        mon = monitor(min_mmh=2.0)
-        mon._grid_t = T0
-        text = mon._format(ring_alert(ring=4, ring_edge_km=6.0, front_km=1.0,
-                                      is_innermost=True), 4.0, T0, 1.5)
-        self.assertNotIn("Sei sotto la pioggia", text)
 
     def test_drizzle_says_it_may_never_reach_the_ground(self):
         mon = monitor()
@@ -573,6 +555,40 @@ class DeliveryTest(unittest.IsolatedAsyncioTestCase):
         await self._dispatch(mon)
         self.assertEqual(mon._tracker.notified_ring, 0)
         self.assertEqual(len(sent), 2)
+
+    async def _innermost(self, mon, overhead_mmh):
+        await mon._dispatch(ring_alert(ring=4, ring_edge_km=6.0, front_km=1.0,
+                                       is_innermost=True), None, [], T0,
+                            origin=ORIGIN, effective=ORIGIN, peak_mmh=4.0,
+                            overhead_mmh=overhead_mmh)
+
+    async def test_innermost_ring_is_not_sent_when_it_already_rains_here(self):
+        """'Rain on you' tells the user what they already know. The ring is
+        still committed, so the event stays bounded and the all-clear follows."""
+        sent = []
+
+        async def confirmed(text, photo=None):
+            sent.append(text)
+            return True
+
+        mon = self._monitor(confirmed)
+        await self._innermost(mon, 3.2)
+        self.assertEqual(sent, [])
+        self.assertEqual(mon._tracker.notified_ring, 4)
+
+    async def test_innermost_ring_is_sent_when_it_is_not_raining_here_yet(self):
+        for overhead in (0.0, None, 0.5):        # dry, no coverage, below min_mmh
+            sent = []
+
+            async def confirmed(text, photo=None):
+                sent.append(text)
+                return True
+
+            with self.subTest(overhead=overhead):
+                mon = self._monitor(confirmed)
+                await self._innermost(mon, overhead)
+                self.assertEqual(len(sent), 1)
+                self.assertIn("Pioggia molto vicina", sent[0])
 
     async def test_a_send_that_raises_is_held(self):
         async def boom(text, photo=None):

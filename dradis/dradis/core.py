@@ -2,7 +2,7 @@
 core.py — agno-free agent runtime
 ──────────────────────────────────
 A thin tool-calling loop over any OpenAI-compatible provider (OpenRouter, OpenAI,
-GitHub Models, Gemini, Groq) using the `openai` SDK.
+GitHub Models, Gemini, Groq, Cloudflare Workers AI) using the `openai` SDK.
 
 This replaces the previous agno Agent/Team layer. Measurements on Groq showed
 agno added ~8000 prompt tokens of framework overhead per request (8 tools:
@@ -27,6 +27,8 @@ from dataclasses import dataclass, field
 from datetime import datetime
 
 API_KEYS: dict = {}
+# Non-secret values a provider's base URL is built from (Cloudflare's account id).
+PROVIDER_PARAMS: dict = {}
 
 # Completion cap. Keeps prompt+completion within the model window; overridable
 # from user settings via set_generation_config().
@@ -41,6 +43,15 @@ GENERATION: dict = {"max_tokens": 2048, "temperature": 0.2}
 # changed nothing at all — the runtime would have gone on trimming pages to fit a
 # window the model never had.
 MODEL_CONTEXT_WINDOW: dict = {
+    # Cloudflare Workers AI first: the same family can have a different window
+    # there, and the lookup stops at the first hit. llama-3.3-70b is 24K on
+    # Cloudflare against 131K on Groq — budgeted at 131K it would be refused.
+    "@cf/meta/llama-3.3-70b":  24000,
+    "@cf/meta/llama-4-scout":  131000,
+    "@cf/qwen/qwen3-30b":      32768,
+    "@cf/google/gemma-4":      256000,
+    "@cf/zai-org/glm-4.7":     131072,
+    "@cf/mistralai/mistral-small-3.1": 128000,
     "gpt-oss":       131072,
     "llama-3.1-8b":  131072,
     "llama-3.3-70b": 131072,
@@ -64,6 +75,14 @@ DEFAULT_CONTEXT_WINDOW = 8192
 # is overridable per provider from the settings — see `set_provider_tpm()`.
 PROVIDER_TPM_DEFAULT: dict = {"groq": 8000}
 PROVIDER_TPM: dict = dict(PROVIDER_TPM_DEFAULT)
+
+# Largest single request, per provider, whatever the model window allows. Not a
+# rate: Cloudflare has no per-minute budget, it bills every token against a daily
+# Neuron allowance (10,000 free). The 8K minute used to cap the cost of a turn as
+# a side effect; without it one read_url page could fill a 128K window and spend
+# a third of the day on one question. Overridable per provider from the settings.
+PROVIDER_MAX_REQUEST_DEFAULT: dict = {"cloudflare": 32000}
+PROVIDER_MAX_REQUEST: dict = dict(PROVIDER_MAX_REQUEST_DEFAULT)
 
 # Safety net: never loop more tool rounds than this even if a caller passes more.
 _MAX_TOOL_ROUNDS = 8
@@ -106,8 +125,9 @@ class ToolError(Exception):
     """A tool could not do its job. Non-fatal for the turn, reportable to the user."""
 
 
-def setup(api_keys: dict) -> None:
+def setup(api_keys: dict, params: dict | None = None) -> None:
     API_KEYS.update(api_keys)
+    PROVIDER_PARAMS.update(params or {})
 
 
 def set_generation_config(max_tokens: int | None = None,
@@ -134,20 +154,31 @@ def set_provider_tpm(provider: str, limit) -> None:
     blank restores whatever we know about that provider, and a provider we know
     nothing about stays unpaced.
     """
+    _set_limit(PROVIDER_TPM, PROVIDER_TPM_DEFAULT, provider, limit)
+
+
+def set_provider_max_request(provider: str, limit) -> None:
+    """Override the largest single request for one provider. Same rules as
+    `set_provider_tpm`: positive overrides, 0 or blank restores the default."""
+    _set_limit(PROVIDER_MAX_REQUEST, PROVIDER_MAX_REQUEST_DEFAULT, provider, limit)
+
+
+def _set_limit(table: dict, defaults: dict, provider: str, limit) -> None:
     try:
         limit = int(limit or 0)
     except (TypeError, ValueError):
         limit = 0
     if limit > 0:
-        PROVIDER_TPM[provider] = limit
-    elif provider in PROVIDER_TPM_DEFAULT:
-        PROVIDER_TPM[provider] = PROVIDER_TPM_DEFAULT[provider]
+        table[provider] = limit
+    elif provider in defaults:
+        table[provider] = defaults[provider]
     else:
-        PROVIDER_TPM.pop(provider, None)
+        table.pop(provider, None)
 
 
 def ceiling_for(model: str, provider: str) -> int:
-    """The largest a single request may be: the tighter of window and TPM budget.
+    """The largest a single request may be: the tightest of window, TPM budget
+    and the provider's per-request cap.
 
     The provider's *whole* minute is used here, not what is left of it right now.
     Sizing a page against the instantaneous remainder would make the same article
@@ -156,9 +187,9 @@ def ceiling_for(model: str, provider: str) -> int:
     and waiting is the right answer to it; permanently discarding half a page is
     not.
     """
-    window = context_window_for(model)
-    limit  = PROVIDER_TPM.get(provider)
-    return min(window, limit) if limit else window
+    limits = [context_window_for(model), PROVIDER_TPM.get(provider),
+              PROVIDER_MAX_REQUEST.get(provider)]
+    return min(x for x in limits if x)
 
 
 def estimate_tokens(text: str) -> int:
@@ -433,11 +464,8 @@ def _api_key_for_provider(provider_id: str) -> str:
 
 
 def _base_url_for_provider(provider_id: str) -> str:
-    from web.store import PROVIDERS
-    for p in PROVIDERS:
-        if p["id"] == provider_id:
-            return p["base_url"]
-    return PROVIDERS[0]["base_url"]
+    from web.store import provider_base_url
+    return provider_base_url(provider_id, PROVIDER_PARAMS)
 
 
 def _now_str(tz_name: str | None = None) -> str:
@@ -469,6 +497,14 @@ def request_too_large(exc: BaseException) -> tuple[int, int] | None:
     return int(match.group(1)), int(match.group(2))
 
 
+def daily_quota_exhausted(exc: BaseException) -> bool:
+    """Cloudflare's free plan out of Neurons for the day. A 429 like any rate
+    limit, but retrying it in two seconds only spends the wait: it resets at
+    00:00 UTC, so the turn goes straight to the fallback."""
+    text = str(exc).lower()
+    return "neuron" in text and ("daily" in text or "allocation" in text)
+
+
 def retry_after_seconds(exc: BaseException) -> float | None:
     """Seconds to wait from a rate-limit error, or None if this is not one.
 
@@ -477,8 +513,8 @@ def retry_after_seconds(exc: BaseException) -> float | None:
     """
     status = getattr(exc, "status_code", None) or getattr(getattr(exc, "response", None), "status_code", None)
     text   = str(exc)
-    if request_too_large(exc):
-        return None    # waiting cannot shrink a request
+    if request_too_large(exc) or daily_quota_exhausted(exc):
+        return None    # waiting cannot shrink a request, nor bring midnight closer
     if status != 429 and "rate_limit" not in text and "429" not in text:
         return None
     headers = getattr(getattr(exc, "response", None), "headers", None)

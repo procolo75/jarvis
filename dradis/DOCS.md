@@ -44,14 +44,16 @@ The single agent runs on the main model (**Settings → DRADIS**). On an API err
 
 The limit that actually bites on a free tier is not the context window — it is **tokens-per-minute**, a rolling 60-second budget that counts *every* request a turn makes, prompt and completion, summed. Groq's free tier allows 8000. A turn re-sends the whole conversation on each tool round, so a task that reads a web page and then calls one more tool can spend 10 000 tokens across three rounds and be refused, while the identical task on the identical page passes when the model happens to answer a round earlier.
 
-The two numbers are separate and both are needed. The **context window** belongs to the model (gpt-oss-120b holds 131 072 tokens); the **per-minute budget** belongs to the plan behind the API key. DRADIS budgets against whichever is tighter, which on a free tier is always the plan — so raising the plan is a number to change in **Settings → DRADIS → Provider tokens per minute**, not a release to wait for.
+The two numbers are separate and both are needed. The **context window** belongs to the model (gpt-oss-120b holds 131 072 tokens); the **per-minute budget** belongs to the plan behind the API key. DRADIS budgets against whichever is tighter, which on a free tier is always the plan — so raising the plan is a number to change in **Settings → Providers**, not a release to wait for. Each provider has its own limits, applied separately to the primary and the fallback: two keys, two plans.
 
 DRADIS keeps itself inside that budget rather than discovering it from a rejection:
 
 - **`max_tokens`** (**Settings → DRADIS → Max completion tokens**, default 2048) caps every reply. Providers reserve it from the window, so on an 8K model the prompt must fit in the remaining ~6K.
 - **Sampling temperature** (default `0.2`) fixes how many tool rounds a prompt costs. Left at the provider default (~1.0) the same prompt answers in one round on one run and calls another tool on the next — on an 8K budget that is the difference between a task that works and one that is refused.
 - **Max tool rounds** (default `3`) bounds the worst case. Every round re-sends the transcript, so this multiplies the cost of a task.
-- **Provider tokens per minute** (default `0`) is that budget. `0` means the figure DRADIS knows — 8000 for Groq, uncapped elsewhere. Set it to your plan's ceiling when you leave the free tier.
+- **Tokens / min** (**Settings → Providers**, per provider, default `0`) is that budget. `0` means the figure DRADIS knows — 8000 for Groq, uncapped elsewhere. Set it to your plan's ceiling when you leave the free tier.
+- **Max tokens / request** (**Settings → Providers**, per provider, default `0`) caps a single request whatever the window allows. `0` means the figure DRADIS knows — 32 000 for Cloudflare, uncapped elsewhere. The request ceiling is the tightest of window, tokens/min and this.
+- **Cloudflare Workers AI** has no per-minute budget: it bills **Neurons** (GPU compute) against a daily allowance — 10 000 free, reset at 00:00 UTC, then $0.011 per 1 000 on Workers Paid. On the free plan an exhausted allowance fails every request until midnight; DRADIS recognises that refusal, does not retry it, and goes straight to the fallback. Without an 8K minute nothing trimmed requests any more, and one `read_url` page could fill a 128K window and spend a third of the day — hence the 32K per-request default. A typical turn (≈6K in, 500 out) costs 50–250 Neurons depending on the model; the model list shows roughly how many turns fit in a free day.
 - Tool results are **trimmed to fit** what is left of the window and of the minute, with `[… content truncated to fit the model budget …]` appended so the model knows it has part of a page rather than all of one. A result dropped whole to make room says so differently, and says it is gone — a model told its page was merely "truncated" goes and fetches the rest, which is the round the trim was paying for.
 - The **size estimate is measured, not assumed**. Text is priced at 2.2 characters per token, the worst ratio observed rather than the average one (a page three-quarters made of URLs tokenises nothing like prose), tool schemas are counted, and after every round the provider's own `usage.prompt_tokens` corrects the estimate upward for the rest of the process if it was optimistic.
 - Requests are **paced against what the provider bills, not only against the estimate.** The estimate over-counts tool schemas by more than two (with every tool on: 4389 estimated, 1860 billed), so a request is priced as the smallest prompt ever billed for the same tool set and model, plus its own messages at the conservative rate — and, from the second round of a turn, as the previous round's bill plus what was added since. Both can only lower the estimate, never under-count. Without this a question asked right after another waited 30–60 s for budget it never used.
@@ -133,7 +135,7 @@ It is sent as its own message, ahead of the reply, and unlike the `🔢`/`🔧` 
 
 - Home Assistant with Supervisor (HAOS or Supervised)
 - A Telegram bot (created via [@BotFather](https://t.me/BotFather))
-- An API key for at least one supported LLM provider (OpenRouter, OpenAI, GitHub Models, Gemini, or Groq)
+- An API key for at least one supported LLM provider (OpenRouter, OpenAI, GitHub Models, Gemini, Groq, or Cloudflare Workers AI)
 - *(Optional)* A [Tavily](https://tavily.com) API key for the Web Search sub-agent
 - *(Optional)* A [Groq](https://console.groq.com) API key for the Voice sub-agent (required to enable voice transcription)
 - *(Optional)* Google Cloud OAuth2 credentials — one credential covers the Google Calendar, Gmail, and Google Tasks sub-agents
@@ -163,6 +165,8 @@ Only API keys and credentials go here. All other settings are managed at runtime
 | `github_token` | password | *(Optional)* GitHub Personal Access Token for GitHub Models |
 | `gemini_api_key` | password | *(Optional)* Google Gemini API key |
 | `groq_api_key` | password | *(Optional)* Groq API key — required for the Voice sub-agent |
+| `cloudflare_account_id` | str | *(Optional)* Cloudflare account ID — required with `cloudflare_api_token` for Cloudflare Workers AI |
+| `cloudflare_api_token` | password | *(Optional)* Cloudflare Workers AI API token |
 | `tavily_api_key` | password | *(Optional)* Tavily API key — required for the Web Search sub-agent |
 | `google_client_id` | str | *(Optional)* Google OAuth2 client ID — required for Google Calendar, Gmail, and/or Google Tasks |
 | `google_client_secret` | password | *(Optional)* Google OAuth2 client secret — required for Google Calendar, Gmail, and/or Google Tasks |
@@ -179,6 +183,7 @@ Fill in at least one LLM provider key. The active provider is selected from the 
 - **GitHub token**: go to [github.com/settings/tokens](https://github.com/settings/tokens) — a classic token with no scopes is sufficient for GitHub Models
 - **Gemini API key**: sign up at [aistudio.google.com](https://aistudio.google.com), click **Get API key**
 - **Groq API key**: sign up at [console.groq.com](https://console.groq.com), go to **API Keys**
+- **Cloudflare Workers AI**: sign up at [dash.cloudflare.com](https://dash.cloudflare.com) (free account is enough) → **AI → Workers AI → Use REST API**. Copy the **Account ID** into `cloudflare_account_id`; then **Create a Workers AI API Token** (pre-filled with *Workers AI – Read* and *Edit*) → **Create API Token** → copy it into `cloudflare_api_token` — it is shown only once. Check it with `curl https://api.cloudflare.com/client/v4/user/tokens/verify -H "Authorization: Bearer <TOKEN>"`, or with **Test connection** in **Settings → Providers**.
 - **Tavily API key** *(optional)*: sign up at [tavily.com](https://tavily.com) — the free tier includes 1 000 searches/month
 - **Google OAuth2 credential** *(optional — required for Calendar, Gmail, and/or Tasks)*: no Google username or password is stored. **One credential covers all three services.**
 
@@ -218,18 +223,17 @@ Lets you edit all non-sensitive DRADIS settings at runtime without restarting th
 
 | Field | Default | Description |
 |-------|---------|-------------|
-| Provider | `openrouter` | LLM provider: OpenRouter, OpenAI, GitHub Models, Gemini, or Groq. Select the provider whose API key is configured in the Configuration tab. |
+| Provider | `openrouter` | LLM provider: OpenRouter, OpenAI, GitHub Models, Gemini, Groq, or Cloudflare Workers AI. Select the provider whose API key is configured in the Configuration tab. |
 | Model | *(see below)* | Model for the selected provider. Click 🔄 to fetch the available list, then ⚡ to speed-test all models in parallel (measures tok/s) and keep the top 5 sorted fastest first. Changing the provider clears the model list. |
 | Fallback Provider | *(blank)* | Provider to use when the primary model call fails. Leave blank to use the same provider as the primary. |
 | Fallback Model | *(blank)* | Model to retry with on API error. Leave blank to disable fallback. Click 🔄 to load models for the fallback provider, ⚡ to speed-test. |
 | Agent instructions | `You are DRADIS, a versatile AI assistant.` | System prompt — defines the agent's role, behaviour, and any persistent facts about the user (name, preferences, language, etc.). |
 | Startup message | `✅ DRADIS online and ready.` | Telegram message sent when the app starts. |
 | Conversation history | `true` | Prepend the last N exchanges as context to each request. |
-| Conversation history depth | `2` | Number of past exchanges kept in context (resets on restart). |
+| Conversation history depth | `2` | Number of past exchanges kept in context (resets on restart). Scheduled task answers are kept too. |
 | Max completion tokens | `2048` | Caps the model's reply length (passed as `max_tokens`) so prompt+reply stay inside the model context window. Keep it at 2048 for the Groq 8K free tier; raise it for larger-context providers. |
 | Sampling temperature | `0.2` | Passed as `temperature`. Low keeps the number of tool rounds — and so the token cost of a task — the same on every run; at the provider default (~1.0) an identical prompt costs a different number of rounds each time. |
 | Max tool rounds | `3` | How many times the model may call tools before it must answer in text. Every round re-sends the whole conversation, so this multiplies the token cost of a task. |
-| Provider tokens per minute | `0` | The rolling 60-second token budget of your plan, counting prompt and reply of every round. `0` uses what DRADIS knows: 8000 for Groq's free tier, no cap for anyone else. This is the limit that refuses a task — the model's context window is a separate, usually much larger number. |
 | Log token usage | `off` | When on, appends `🔢 in N · out N` (input/output tokens) to every chat and task reply. |
 | Log tools used | `off` | When on, appends `🔧 tool1, tool2` (the tools DRADIS called that turn, deduped) to every chat and task reply; shows `🔧 no tools` when the reply used none. |
 | Report tool failures | `on` | When on, sends a `⚠️` Telegram message naming any tool that failed this turn (page unreachable, account disconnected) ahead of the reply, so an answer built on missing data is not mistaken for a good one. Unlike the two log footers above it is not suppressed in Car Mode. |
@@ -244,6 +248,20 @@ Lets you edit all non-sensitive DRADIS settings at runtime without restarting th
 | GitHub Models | Fixed preset: GPT-4o, GPT-4o Mini, Phi 3.5 MoE, Phi 3.5 Mini, Llama 3.1 70B, Llama 3.1 8B, Mistral Nemo, Mistral Large |
 | Gemini | Fixed preset: Gemini 2.0 Flash, 2.0 Flash Lite, 2.5 Pro Preview, 1.5 Pro, 1.5 Flash, 1.5 Flash 8B |
 | Groq | 🔄 fetches LLM models from the API (Whisper models excluded) |
+
+### Settings → Providers
+
+The plan behind each API key. Keys themselves stay in the add-on Configuration tab; a 🟢 marks a provider whose key (and, for Cloudflare, account ID) is set. Saved to `provider_limits` in `/data/dradis_settings.json`, applied on the next request.
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| Tokens / min | `0` | Rolling 60-second budget, prompt and reply of every round. `0` = what DRADIS knows: 8000 for Groq, no cap elsewhere. |
+| Max tokens / request | `0` | Largest single request whatever the model window allows. `0` = what DRADIS knows: 32 000 for Cloudflare, no cap elsewhere. |
+| Test connection | — | Lists the provider's models with the configured key. For Cloudflare it checks account ID and token together. |
+
+A global *Provider tokens per minute* set before this panel existed is moved once, at startup, to the primary provider (to the fallback if the primary is Cloudflare, which has no per-minute budget).
+
+**Cloudflare models** (function calling, free plan; window · free turns per day at ≈6K in / 500 out): GLM 4.7 Flash 131K · ~200, Qwen3 30B A3B 32K · ~220, Gemma 4 26B 256K · ~145, gpt-oss 20B 128K · ~80, Llama 4 Scout 131K · ~50, gpt-oss 120B 128K · ~45, Mistral Small 3.1 128K · ~45, Llama 3.3 70B **24K** · ~40. Paid-only models (GLM 5.x, Kimi, DeepSeek V4) are not listed; type their id by hand on a Workers Paid account.
 
 ### Agents → Web Search
 
@@ -1049,7 +1067,7 @@ These replace the threshold tuning of the previous six generations, and both are
 
 **Quiet hours** silence the outer rings and the all-clear. A front already within 40 % of the radius always gets through. Suppressed alerts are still committed, so they are not retried every minute until the window ends.
 
-**Radius** is clamped to **10–60 km**, in the UI and again in the monitor.
+**Radius** is clamped to **20–60 km**, in the UI and again in the monitor. The floor is physical, not about lag (Blitzortung is near real time): lightning reaches 10–15 km from the cell, so a smaller radius warns you once you are already in range, and its innermost ring would sit inside the cell. The innermost heading reads *🔴 Temporale molto vicino* — a distance, not "over you".
 
 ##### Where to watch — a fixed place, or a phone
 
@@ -1250,7 +1268,7 @@ So the alert can say `🧭 Rotta d'incontro: ti raggiunge fra 26 min` or `🧭 T
 
 **It refuses to invent one.** The correlation is gated on peak-to-sidelobe ratio: the peak divided by the best rival outside a small exclusion box. Calibrated against real products at four sites, every physically absurd reading scored 1.0–1.9 and every reading that agreed across box sizes and baselines scored 3.1–6.5, so the threshold sits in an empty gap. On scattered summer convection the gate **refuses often** — that is the honest answer, not a degraded mode, and it is why the inherited CBDR verdict remains as the fallback. CBDR needs no velocity at all: it reads the rotation of a relative bearing, which a moving observer supplies on its own. When neither can answer, the alert reports distance and bearing and nothing more.
 
-**"You are under the rain" is measured, not inferred from the ring.** The innermost ring is a fifth of the radius — 4 km at a 20 km radius — so reaching it means the front is close, not that anything is falling on you. Each alert therefore reads `peak_in_disc(grid, effective, 2 km)`, the strongest intensity within 2 km of the fix, and the `🔵 Pioggia su di te` heading and the `🧭 Sei sotto la pioggia` line require it to reach the monitor's own `min_mmh` — the same bar the rest of the message uses, so the two halves cannot disagree. Below it the alert keeps its ring and its distance and stops claiming the part it cannot see. `None`, meaning no coverage over the observer, is neither a claim nor a denial. Two kilometres rather than the single pixel because the picture is 10–15 minutes old and is only advected when the drift cleared its gate, which at drizzle intensities it usually does not.
+**No "rain on you" message.** If it is raining where you are, you know. Each alert reads `peak_in_disc(grid, effective, 2 km)`, the strongest intensity within 2 km of the fix; when the innermost ring fires and that reading reaches the monitor's own `min_mmh`, the alert is **committed without being sent** (the event stays bounded and the all-clear follows as usual). Otherwise the innermost ring is sent as *🔵 Pioggia molto vicina* with its distance. `None`, meaning no coverage over the observer, does not hold anything back. Two kilometres rather than the single pixel because the picture is 10–15 minutes old and is only advected when the drift cleared its gate, which at drizzle intensities it usually does not.
 
 **Drizzle says what drizzle is worth.** Below `DRIZZLE_MMH` (0.5 mm/h, the first edge of the intensity table) the alert adds one line: at that intensity the return evaporates before the ground more often than not, and near a coast it competes with sea clutter and anomalous propagation. A dry pavement under a correct radar picture is a thing the message now explains rather than leaving the user to discover.
 
@@ -1269,7 +1287,7 @@ The first of those three is now much rarer than it was. A stale fix is no longer
 | Field | Description |
 |-------|-------------|
 | Where to watch / Location | Identical to the storm front: a named position it follows, or fixed coordinates. |
-| Alert radius | 10–60 km. The disc is observed out to 1.6× that. |
+| Alert radius | 25–60 km. The disc is observed out to 1.6× that. The floor is the radar's age: the picture is 11–16 min old when it arrives (published ~10 min late, refreshed every 5), so at 30 km/h the front has moved 6–8 km before the monitor sees it. With a 10 km radius the 6.5/4/2 km rings fired after the rain had arrived. 30–40 km with 3 rings is the sensible range. |
 | Updates per event | Hard cap of 2, 3 or 4 ring messages per event, plus one all-clear. |
 | **Rain worth telling you about** | Minimum intensity in mm/h: `0.2` even drizzle, **`1` proper rain (recommended)**, `4` a real shower, `10` heavy rain only. The radar sees down to a damp mist; set this too low and a grey afternoon keeps the event open for hours. |
 | Radar picture | Attaches the actual radar crop to each ring message. |
@@ -1304,7 +1322,7 @@ Three reasons, each sufficient alone:
 2. **A broken gauge and a dry gauge give the same zero.** A station that stops transmitting does not return an error; it returns fewer rows. Giving that zero a vote makes the monitor's silence depend on a sensor nobody is watching.
 3. **It is somewhere else.** The nearest station can be seven kilometres away while the cell is at three.
 
-The most tempting exception is refused on purpose: a station inside the 2 km overhead disc reporting nothing does **not** downgrade `🔵 Pioggia su di te`. The radar's ground claim stays the radar's to make, and you see both readings and judge.
+The most tempting exception is refused on purpose: a station inside the 2 km overhead disc reporting nothing does **not** release an innermost alert the radar held back because it is raining there. The radar's ground claim stays the radar's to make.
 
 ##### How it is read
 
@@ -1393,6 +1411,8 @@ It is a monitor of its own, not a mode of the rain front, and the reason is the 
 |-------|------|---------|
 | 🧊 **Watch** | The highest probability within the radius reaches the *watch* value (default **40%**) | `Rischio grandine`, with the percentage and where the most likely spot is: distance and compass direction |
 | 🚨 **Serious** | The highest probability reaches the *serious* value (default **70%**), **or** a cell within **10 km** reaches the watch value | `Grandine probabile`, plus a reminder to shelter vehicles and exposed items |
+
+**No "hail over you" message.** When the most likely spot is within **2 km** of you the alert is counted but not sent: the picture is 11–16 minutes old, so whatever that cell brought has already fallen where you can see it. The all-clear follows as usual.
 | ✅ **All-clear** | Three consecutive new radar images stay below the watch value | `Rischio grandine cessato`, with the event's peak |
 
 **Bounded by construction.** One hail event sends at most one message per level — so at most two — plus one all-clear, whatever the cell does. Levels only ever escalate within an event, so a cell flickering around a threshold cannot repeat a message. The all-clear counts *radar images*, not polls: the radar publishes every 5 minutes and polling every minute would otherwise "confirm" the same picture five times.
@@ -1720,6 +1740,8 @@ Type `/` in Telegram to see the full command list with descriptions.
 ## Conversation History
 
 When **Conversation history** is enabled, the last N exchanges (configurable via **Conversation history depth**) are prepended to each request as context. This buffer is in-memory and resets on restart.
+
+A **scheduled task's answer** is kept in the same history, as an assistant turn labelled with the task (`[Task 'Meteo']`), plain text, capped at 1500 characters — so you can reply to it ("and tomorrow?" after the weather report). Monitor reports, live alerts, HA monitor messages and error/fallback notices are not kept: a burst of alerts would push the conversation out of a short history.
 
 To give DRADIS persistent knowledge about the user (name, preferences, language, etc.), add it directly to the **Agent instructions** field in the Web UI Settings tab.
 

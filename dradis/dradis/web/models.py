@@ -143,6 +143,11 @@ class BotPayload(BaseModel):
     chat_id: int
 
 
+class ProviderLimitsPayload(BaseModel):
+    # {"groq": {"tpm": 8000, "max_request": 0}, ...}; 0 = DRADIS default.
+    limits: dict[str, dict[str, int]] = {}
+
+
 class SettingsPayload(BaseModel):
     provider:             str  = "openrouter"
     agent_instructions:   str  = "You are DRADIS, a versatile AI assistant."
@@ -150,7 +155,6 @@ class SettingsPayload(BaseModel):
     max_tokens:           int  = 2048
     temperature:          float = 0.2
     tool_call_limit:      int  = 3
-    tpm_limit:            int  = 0
     token_usage_enabled:  bool = False
     tools_usage_enabled:  bool = False
     tool_errors_enabled:  bool = True

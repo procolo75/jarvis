@@ -168,6 +168,7 @@ async def run_scheduled_task(task: dict, on_result=None):
                 text=body,
                 parse_mode=parse_mode,
             )
+            _state.save_notification(f"Task '{task_name}'", text, settings)
     await _report(on_result, _state.md_to_html(text) if text
                   else f"Task {task_name}: no answer.")
 

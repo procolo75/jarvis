@@ -63,6 +63,12 @@ PERCENT_CEILING = 100.0
 # A cell this close is not "in the area", it is where the observer is standing.
 NEAR_RADIUS_KM = 10.0
 
+# The most likely spot this close means the cell is on the observer — and the
+# picture is 11-16 min old, so whatever it brought has already fallen. No message
+# then: "hail over you" tells the user what they can see. Same 2 km as the rain
+# front's overhead disc (position error plus unresolved drift).
+OVERHEAD_RADIUS_KM = 2.0
+
 # Consecutive NEW rasters below the watch threshold before the all-clear. Three
 # five-minute products is a quarter of an hour: hail cells pulse, and an
 # all-clear that arrives between two pulses is worse than none.
@@ -433,6 +439,15 @@ class HailFrontLiveMonitor:
             self._tracker.commit(alert)
             self._save_state()
             return
+        # Committed, not sent: the level is consumed so it cannot fire again
+        # this event, and the all-clear follows as usual.
+        if isinstance(alert, HailAlert) and alert.distance_km <= OVERHEAD_RADIUS_KM:
+            _LOGGER.info("[HailFront] '%s' tier %d not sent — peak %.0f%% already "
+                         "over the observer (%.1f km)", self.name, alert.tier,
+                         alert.peak_percent, alert.distance_km)
+            self._tracker.commit(alert)
+            self._save_state()
+            return
 
         text = self._format(alert, now)
         try:
@@ -492,20 +507,14 @@ class HailFrontLiveMonitor:
                     else f"🧊 <b>Hail risk — {self._loc()}</b>")
         lines = [head, self._origin_line()]
 
-        if alert.distance_km <= 2.0:
-            lines.append(
-                (f"📍 Massimo <b>{alert.peak_percent:.0f}%</b> proprio sopra di te"
-                 if it else
-                 f"📍 Peak <b>{alert.peak_percent:.0f}%</b> right over you"))
-        else:
-            heading = direction_label(alert.bearing_deg, self.language)
-            lines.append(
-                (f"📍 Massimo <b>{alert.peak_percent:.0f}%</b> a "
-                 f"<b>{alert.distance_km:.0f} km</b> a {heading} "
-                 f"({alert.bearing_deg:.0f}°)") if it else
-                (f"📍 Peak <b>{alert.peak_percent:.0f}%</b> at "
-                 f"<b>{alert.distance_km:.0f} km</b> to {heading} "
-                 f"({alert.bearing_deg:.0f}°)"))
+        heading = direction_label(alert.bearing_deg, self.language)
+        lines.append(
+            (f"📍 Massimo <b>{alert.peak_percent:.0f}%</b> a "
+             f"<b>{alert.distance_km:.0f} km</b> a {heading} "
+             f"({alert.bearing_deg:.0f}°)") if it else
+            (f"📍 Peak <b>{alert.peak_percent:.0f}%</b> at "
+             f"<b>{alert.distance_km:.0f} km</b> to {heading} "
+             f"({alert.bearing_deg:.0f}°)"))
         if alert.near_percent is not None and alert.near_percent >= self.watch_percent:
             lines.append(
                 (f"⚠️ Entro {NEAR_RADIUS_KM:.0f} km: {alert.near_percent:.0f}%" if it
@@ -607,6 +616,12 @@ class HailFrontMonitorManager:
             existing = self._monitors.get(mid)
             if (existing and self._fingerprints.get(mid) == fingerprint
                     and existing.is_running()):
+                # Unchanged where it matters, so it keeps running — but HOW it
+                # delivers is rebuilt on every save. The voice switch and its
+                # quiet hours are not in the fingerprint (changing them must not
+                # throw away a storm in progress), so without this the send
+                # function baked at start kept speaking after the voice was off.
+                existing._send = make_send_fn(cfg)
                 continue
             self._fingerprints[mid] = fingerprint
             replacement = HailFrontLiveMonitor(cfg, make_send_fn(cfg), tz_name)

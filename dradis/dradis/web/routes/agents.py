@@ -11,6 +11,7 @@ import httpx
 from fastapi import APIRouter, HTTPException
 
 from web.store import (
+    CLOUDFLARE_MODELS,
     GITHUB_MODELS,
     GEMINI_MODELS,
     _SPEEDTEST_PROMPT,
@@ -149,6 +150,8 @@ async def get_models(provider: str = "openrouter"):
             return GEMINI_MODELS
         elif provider == "groq":
             return await _fetch_groq_models(api_key)
+        elif provider == "cloudflare":
+            return CLOUDFLARE_MODELS
         else:
             raise HTTPException(status_code=400, detail=f"Unknown provider: {provider}")
     except HTTPException:

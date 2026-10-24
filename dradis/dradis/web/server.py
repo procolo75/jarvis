@@ -18,6 +18,7 @@ from web.routes.tools    import router as tools_router
 from web.routes.bots     import router as bots_router
 from web.routes.positions import router as positions_router
 from web.routes.assist    import router as assist_router
+from web.routes.providers import router as providers_router
 
 # ── Re-exports for backwards-compatible imports in main.py and agents/ ────────
 from web.store import (  # noqa: F401
@@ -54,3 +55,4 @@ app.include_router(tools_router)
 app.include_router(bots_router)
 app.include_router(positions_router)
 app.include_router(assist_router)
+app.include_router(providers_router)

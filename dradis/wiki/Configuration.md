@@ -13,12 +13,16 @@ All API keys and credentials are configured in the add-on **Configuration** tab 
 | `github_token` | password | *(Optional)* GitHub Personal Access Token for GitHub Models |
 | `gemini_api_key` | password | *(Optional)* Google Gemini API key |
 | `groq_api_key` | password | *(Optional)* Groq API key — required for Voice transcription |
+| `cloudflare_account_id` | str | *(Optional)* Cloudflare account ID — required with the token for Cloudflare Workers AI |
+| `cloudflare_api_token` | password | *(Optional)* Cloudflare Workers AI API token |
 | `tavily_api_key` | password | *(Optional)* Tavily API key — required for the Web Search tool |
 | `google_client_id` | str | *(Optional)* Google OAuth2 client ID — required for Google Calendar, Gmail, and/or Google Tasks |
 | `google_client_secret` | password | *(Optional)* Google OAuth2 client secret |
 | `rapidapi_football_key` | password | *(Optional)* RapidAPI key — required for the Football Betting live monitor |
 
-At least one LLM provider key is required. The active provider is selected from the Web UI.
+At least one LLM provider key is required. The active provider is selected from the Web UI; per-provider limits (tokens per minute, max tokens per request) are in **Settings → Providers**.
+
+**Cloudflare Workers AI**: [dash.cloudflare.com](https://dash.cloudflare.com) → **AI → Workers AI → Use REST API** → copy the **Account ID**, then **Create a Workers AI API Token** and copy it (shown once). Cloudflare has no per-minute budget: it bills *Neurons* against a daily allowance (10,000 free, reset at 00:00 UTC).
 
 ## How to Get Your API Keys
 

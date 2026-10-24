@@ -71,7 +71,7 @@ from .radar_core import (
 from .snapshot import Snapshot, describe_origin, origin_line, preview_alert
 from .storm_front_core import (
     CBDR_CLOSING_KM, CBDR_GRAZING_KM, EVENT_IDLE, OBSERVE_FACTOR,
-    POLL_INTERVAL_SEC, TRACK_CLOSING, TRACK_GRAZING, TRACK_UNKNOWN,
+    POLL_INTERVAL_SEC, RAIN_MIN_RADIUS_KM, TRACK_CLOSING, TRACK_GRAZING, TRACK_UNKNOWN,
     ClearAlert, RingAlert, StormFrontTracker,
     angle_delta, clamp_radius, clamp_ring_count, ring_edges,
 )
@@ -220,7 +220,7 @@ class RainFrontLiveMonitor:
         self._send      = telegram_send_fn
 
         raw_radius = cfg.get("radius_km", 30)
-        self.radius_km  = clamp_radius(raw_radius)
+        self.radius_km  = clamp_radius(raw_radius, RAIN_MIN_RADIUS_KM)
         if abs(float(raw_radius or 0) - self.radius_km) > 0.01:
             _LOGGER.warning("[RainFront] '%s' radius %s km clamped to %.0f km",
                             self.name, raw_radius, self.radius_km)
@@ -725,9 +725,19 @@ class RainFrontLiveMonitor:
             self._tracker.commit(alert, now)
             self._save_state()
             return
+        # The innermost ring with rain already measured where the user is: the
+        # message could only say "it is raining on you", which they know. The
+        # ring is committed so the event stays bounded and the all-clear follows.
+        if (isinstance(alert, RingAlert) and alert.is_innermost
+                and self._is_overhead(overhead_mmh)):
+            _LOGGER.info("[RainFront] '%s' innermost ring not sent — already "
+                         "raining at the observer (%.1f mm/h)", self.name,
+                         overhead_mmh)
+            self._tracker.commit(alert, now)
+            self._save_state()
+            return
 
-        text = self._format(alert, peak_mmh, now, overhead_mmh,
-                            gauges)
+        text = self._format(alert, peak_mmh, now, gauges)
         photo = await self._render_chart(alert, frame, points, now, effective)
 
         try:
@@ -802,24 +812,23 @@ class RainFrontLiveMonitor:
     # ── Formatting ────────────────────────────────────────────────────────────
 
     _RING_HEADS_IT = ["🌧️ <b>Pioggia nel raggio", "🌧️ <b>Pioggia più vicina",
-                      "🟠 <b>Pioggia vicina", "🔵 <b>Pioggia su di te"]
+                      "🟠 <b>Pioggia vicina", "🔵 <b>Pioggia molto vicina"]
     _RING_HEADS_EN = ["🌧️ <b>Rain within range", "🌧️ <b>Rain closing in",
-                      "🟠 <b>Rain nearby", "🔵 <b>Rain overhead"]
+                      "🟠 <b>Rain nearby", "🔵 <b>Rain very close"]
 
     def _format(self, alert, peak_mmh: float | None, now: float,
-                overhead_mmh: float | None = None, gauges=None) -> str:
+                gauges=None) -> str:
         if isinstance(alert, ClearAlert):
             return self._fmt_clear(alert, now, gauges)
-        return self._fmt_ring(alert, peak_mmh, now, overhead_mmh,
-                              gauges)
+        return self._fmt_ring(alert, peak_mmh, now, gauges)
 
     def _is_overhead(self, overhead_mmh: float | None) -> bool:
         """Whether the radar shows rain WHERE THE OBSERVER IS.
 
-        The innermost ring is a fifth of the radius — 4 km at radius 20 — so
-        reaching it says the front is close, not that anything is falling on you.
-        The message used to claim the second from the first, and announced
-        "Pioggia su di te" over a dry pavement.
+        The innermost ring is a fifth of the radius, so reaching it says the
+        front is close, not that anything is falling on you. Used only to hold
+        back the innermost alert when it is already raining there — telling the
+        user so is the one message with no information in it.
 
         `None` is the radar seeing nothing there, which is not the same as no
         rain and must not be read as either an absence or a presence: with no
@@ -827,19 +836,19 @@ class RainFrontLiveMonitor:
 
         The bar is `min_mmh` rather than a constant of its own, so "it is raining
         where I am" means exactly what "this rain is worth telling you about"
-        means in the same message.
+        means.
         """
         return overhead_mmh is not None and overhead_mmh >= self.min_mmh
 
-    def _head(self, alert: RingAlert, overhead: bool = False) -> str:
+    def _head(self, alert: RingAlert) -> str:
         heads = self._RING_HEADS_IT if self.language == "it" else self._RING_HEADS_EN
-        if alert.is_innermost and overhead:
+        if alert.is_innermost:
             head = heads[-1]
         else:
             head = heads[min(alert.ring - 1, len(heads) - 2)]
         return f"{head} — {self._loc()}</b>"
 
-    def _track_line(self, alert: RingAlert, overhead: bool = False) -> str:
+    def _track_line(self, alert: RingAlert) -> str:
         """The verdict, worded to say WHICH instrument produced it.
 
         A measured closest approach carries a time and a miss distance; an
@@ -867,14 +876,13 @@ class RainFrontLiveMonitor:
                     f"🧭 Closest approach in {minutes} min, by an amount still "
                     f"too close to call")
 
-        # Measured overhead, not merely inside the innermost ring: see
-        # `_is_overhead`. Without that measurement the ordinary verdict below
-        # answers, and it names the distance instead of asserting a ground truth.
-        if alert.is_innermost and overhead and alert.track != TRACK_GRAZING:
-            return "🧭 Sei sotto la pioggia" if it else "🧭 You are under the rain"
+        # No velocity here — only the front's bearing held steady while its
+        # distance fell. Said as exactly that: "heading straight for you" next to
+        # "movement not measurable" read as a contradiction.
         if alert.track == TRACK_CLOSING:
-            return ("🧭 Rotta costante: ti arriva addosso" if it
-                    else "🧭 Constant bearing: heading straight for you")
+            return ("🧭 Si avvicina sempre dalla stessa direzione: probabile "
+                    "che ti raggiunga" if it
+                    else "🧭 Closing from a steady direction: likely to reach you")
         if alert.track == TRACK_GRAZING:
             side = direction_label(alert.pass_bearing_deg if alert.pass_bearing_deg
                                    is not None else alert.bearing_deg, self.language)
@@ -916,6 +924,11 @@ class RainFrontLiveMonitor:
         """
         it = self.language == "it"
         if self._field is None:
+            # With a bearing-based verdict above, the track line already says
+            # how the rain is moving relative to you; "not measurable" under it
+            # read as the message taking its own claim back.
+            if alert is not None and alert.track in (TRACK_CLOSING, TRACK_GRAZING):
+                return ""
             return ("🌬️ Movimento della pioggia non misurabile" if it
                     else "🌬️ Rain movement not measurable")
         if self._field.speed_kmh < 1.0:
@@ -1012,11 +1025,10 @@ class RainFrontLiveMonitor:
                 else f"📡 Radar at {clock} ({age} min ago)")
 
     def _fmt_ring(self, alert: RingAlert, peak_mmh: float | None, now: float,
-                  overhead_mmh: float | None = None, gauges=None) -> str:
+                  gauges=None) -> str:
         it = self.language == "it"
         heading = direction_label(alert.bearing_deg, self.language)
-        overhead = self._is_overhead(overhead_mmh)
-        lines = [self._head(alert, overhead), self._origin_line()]
+        lines = [self._head(alert), self._origin_line()]
         lines.append(
             (f"📍 Fronte a <b>{alert.front_km:.0f} km</b> a {heading} "
              f"({alert.bearing_deg:.0f}°)") if it else
@@ -1044,7 +1056,7 @@ class RainFrontLiveMonitor:
              f"{alert.ring_edge_km:.0f} km") if it else
             (f"🎯 Ring {alert.ring}/{alert.ring_count} · within "
              f"{alert.ring_edge_km:.0f} km"))
-        lines.append(self._track_line(alert, overhead))
+        lines.append(self._track_line(alert))
         lines.append(self._field_line(alert))
         motion_line = self._motion_line(alert)
         if motion_line:
@@ -1169,6 +1181,12 @@ class RainFrontMonitorManager:
             existing = self._monitors.get(mid)
             if (existing and self._fingerprints.get(mid) == fingerprint
                     and existing.is_running()):
+                # Unchanged where it matters, so it keeps running — but HOW it
+                # delivers is rebuilt on every save. The voice switch and its
+                # quiet hours are not in the fingerprint (changing them must not
+                # throw away a storm in progress), so without this the send
+                # function baked at start kept speaking after the voice was off.
+                existing._send = make_send_fn(cfg)
                 continue
             self._fingerprints[mid] = fingerprint
             replacement = RainFrontLiveMonitor(cfg, make_send_fn(cfg), tz_name)

@@ -93,6 +93,22 @@ RING_HYSTERESIS    = 0.15                    # the front must retreat 15 % past 
 MIN_RADIUS_KM = 10.0
 MAX_RADIUS_KM = 60.0
 
+# Per-source floors, set by how old the picture is when it arrives. An alert for
+# a ring at distance d is only worth sending if d ≥ v · (lag + useful lead).
+#
+# Storm: Blitzortung is near real time, so the lag is 2-4 min (poll + confirm) —
+# a couple of km at 40 km/h. The floor is set by physics instead: lightning
+# reaches 10-15 km from the cell, and 20 minutes of warning before that zone is
+# ~25 km. Below 20 the innermost ring (0.20·R = 4 km) sits inside the cell.
+#
+# Rain: the DPC product is published ~10 min late and refreshed every 5, so what
+# the monitor sees is 11-16 min old. At 30 km/h that is 6-8 km travelled before
+# the picture exists. Advection corrects it only when the drift is measurable,
+# which on scattered showers it often is not. At R=10 the rings 6.5/4/2 km were
+# all behind the front by the time they fired — "rain nearby" while it rained.
+STORM_MIN_RADIUS_KM = 20.0
+RAIN_MIN_RADIUS_KM = 25.0
+
 # ── Front ─────────────────────────────────────────────────────────────────────
 WINDOW_MIN         = 10.0    # analysis window, minutes
 MIN_STRIKES_SECTOR = 4       # below this a sector is INACTIVE and contributes nothing
@@ -164,14 +180,15 @@ TRACK_UNKNOWN = "unknown"
 
 # ── Radius / rings ────────────────────────────────────────────────────────────
 
-def clamp_radius(radius_km: float) -> float:
+def clamp_radius(radius_km: float, min_km: float = MIN_RADIUS_KM) -> float:
     """The shared LiveMonitorPayload defaults radius_km to 100, which is far
-    outside what this algorithm is designed for. Clamp rather than trust."""
+    outside what this algorithm is designed for. Clamp rather than trust.
+    `min_km` is the caller's floor — see STORM_/RAIN_MIN_RADIUS_KM."""
     try:
         r = float(radius_km)
     except (TypeError, ValueError):
         return 30.0
-    return max(MIN_RADIUS_KM, min(MAX_RADIUS_KM, r))
+    return max(min_km, min(MAX_RADIUS_KM, r))
 
 
 def clamp_ring_count(ring_count) -> int:
@@ -763,7 +780,7 @@ class StormFrontTracker:
 __all__ = [
     "SECTOR_COUNT", "SECTOR_WIDTH_DEG", "OBSERVE_FACTOR",
     "RING_FRACTIONS", "DEFAULT_RING_COUNT", "RING_HYSTERESIS",
-    "MIN_RADIUS_KM", "MAX_RADIUS_KM",
+    "MIN_RADIUS_KM", "MAX_RADIUS_KM", "STORM_MIN_RADIUS_KM", "RAIN_MIN_RADIUS_KM",
     "WINDOW_MIN", "MIN_STRIKES_SECTOR", "FRONT_QUANTILE", "FRONT_MIN_RANK",
     "POLL_INTERVAL_SEC", "CONFIRM_POLLS", "CLEAR_DWELL_SEC", "WARMUP_SEC",
     "CBDR_HISTORY_SEC", "CBDR_CLOSING_KM",

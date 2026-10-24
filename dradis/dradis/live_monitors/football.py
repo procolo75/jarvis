@@ -491,6 +491,12 @@ class FootballMonitorManager:
             existing = self._monitors.get(mid)
             if (existing and self._fingerprints.get(mid) == fingerprint
                     and existing.is_running()):
+                # Unchanged where it matters, so it keeps running — but HOW it
+                # delivers is rebuilt on every save. The voice switch and its
+                # quiet hours are not in the fingerprint (changing them must not
+                # throw away a storm in progress), so without this the send
+                # function baked at start kept speaking after the voice was off.
+                existing._send = make_send_fn(cfg)
                 continue
 
             self._fingerprints[mid] = fingerprint

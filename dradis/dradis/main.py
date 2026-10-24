@@ -78,6 +78,7 @@ from web.store import (
     register_bots_changed_callback,
     register_positions_changed_callback,
     migrate_legacy_position,
+    persist_provider_limits,
 )
 from live_monitors.ha import ha_monitor_manager
 import assist
@@ -193,6 +194,11 @@ async def main():
         reload_monitor_jobs()
         _migrate_live_monitors()
         _migrate_positions()
+        try:
+            if persist_provider_limits():
+                print("[DRADIS] Moved the global tokens-per-minute setting to per-provider limits")
+        except Exception as e:
+            print(f"[DRADIS] WARNING: provider limits migration failed: {e}")
         reload_live_monitors()
         reload_ha_monitors()
         await assist.startup(_state.WEB_PORT, notify=_state.send_telegram)

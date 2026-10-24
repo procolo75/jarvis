@@ -70,7 +70,7 @@ ha_integration/dradis/       # Home Assistant integration: config flow + DRADIS 
 
 ## Token Budget
 
-Two ceilings, and they are not the same number. The **context window** belongs to the model — `MODEL_CONTEXT_WINDOW` in `core.py`, 131 072 for gpt-oss-120b and most of the current Groq line-up. The **tokens-per-minute budget** belongs to the plan behind the API key — `PROVIDER_TPM`, 8000 on Groq's free tier, overridable from **Settings → DRADIS → Provider tokens per minute**. `ceiling_for(model, provider)` takes the tighter of the two, which on a free tier is always the plan. Keeping them apart is not pedantry: while the table claimed gpt-oss held 8192 tokens, paying for a larger plan would have changed nothing at all.
+Two ceilings, and they are not the same number. The **context window** belongs to the model — `MODEL_CONTEXT_WINDOW` in `core.py`, 131 072 for gpt-oss-120b and most of the current Groq line-up. The **tokens-per-minute budget** belongs to the plan behind the API key — `PROVIDER_TPM`, 8000 on Groq's free tier, overridable per provider from **Settings → Providers**. A third, `PROVIDER_MAX_REQUEST`, caps a single request (32K by default on Cloudflare Workers AI, which bills a daily Neuron allowance instead of a minute). `ceiling_for(model, provider)` takes the tightest of them, which on a free tier is always the plan. Keeping them apart is not pedantry: while the table claimed gpt-oss held 8192 tokens, paying for a larger plan would have changed nothing at all.
 
 A turn re-sends its whole transcript on every tool round, so the cost is cumulative and the budget is spent by the minute, not by the request:
 

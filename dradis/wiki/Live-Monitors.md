@@ -192,7 +192,7 @@ Name:              Bacoli Temporali
 Type:              🌩️ Storm front / CBDR
 Location:          Bacoli
 Where to watch:    📌 A fixed place   (or a named position)
-Radius:            30 km      (10-60)
+Radius:            30 km      (20-60)
 Updates per storm: 4
 Radar:             on
 Language:          🇮🇹 Italiano
@@ -272,7 +272,7 @@ And when it is over:
 | Field | What it does |
 |-------|--------------|
 | **Where to watch** | A fixed place, or a phone to follow — identical to the Storm front, including the four grades of origin and the `📌` line naming the point every distance was measured from. |
-| **Alert radius** | 10–60 km. At 30 km you get roughly half an hour of warning for a front moving at 60 km/h. |
+| **Alert radius** | 25–60 km. At 30 km you get roughly half an hour of warning for a front moving at 60 km/h. Below 25 km the radar's 11–16 minutes of age eat the warning: the inner rings fire after the rain has reached you. 30–40 km with 3 rings is the sensible range. |
 | **Updates per rain event** | Hard cap of 2, 3 or 4 messages per event. Not a sensitivity setting — it changes how often you are told, never what the monitor decides. |
 | **Rain worth telling you about** | The minimum intensity that counts. See the table below. |
 | **Radar picture** | Attaches the radar image to each message. |
@@ -352,14 +352,12 @@ So the measurement has to pass a test: the best match must stand clearly above t
 
 **On scattered convection this test fails often.** That is the honest answer rather than a shortcoming, and it is why the Storm front's bearing-drift method remains as the fallback: it needs no speed measurement at all, only the rotation of a bearing, which a moving observer supplies by itself. When neither can answer, the alert gives you distance and direction and no time at all.
 
-#### "It is raining on you" is a measurement, not a ring
+#### No "it is raining on you" message
 
-The innermost ring is a fifth of the radius — **4 km** with a 20 km radius — so a front reaching it is close, not overhead. Until 4.4.3 the alert said *"🔵 Pioggia su di te"* and *"🧭 Sei sotto la pioggia"* on that basis alone, and it was possible to receive it under a dry sky with the radar picture perfectly correct.
-
-Now each alert also reads **the strongest intensity within 2 km of where you are**, and those two lines require it to reach the same threshold you set for the monitor. Otherwise the message keeps the ring, keeps the distance, and says nothing about your pavement:
+If it is raining where you are, you know. Each alert reads **the strongest intensity within 2 km of where you are**; when the innermost ring fires and that reaches the threshold you set, the alert is not sent (it is still counted, so the all-clear follows normally). Otherwise the innermost ring arrives as *🔵 Pioggia molto vicina* with its distance:
 
 ```
-🟠 Pioggia vicina — Casa
+🔵 Pioggia molto vicina — Casa
 📍 Fronte a 3 km a NO (308°)
 🌧️ Intensità massima 0.4 mm/h (pioviggine)
 🌂 Solo pioviggine sul radar: a queste intensità può evaporare prima di toccare terra
@@ -495,6 +493,8 @@ It is a monitor of its own, not a mode of the rain front, and the reason is the 
 |-------|------|---------|
 | 🧊 **Watch** | The highest probability within the radius reaches the *watch* value (default **40%**) | `Rischio grandine`, with the percentage and where the most likely spot is: distance and compass direction |
 | 🚨 **Serious** | The highest probability reaches the *serious* value (default **70%**), **or** a cell within **10 km** reaches the watch value | `Grandine probabile`, plus a reminder to shelter vehicles and exposed items |
+
+**No "hail over you" message.** When the most likely spot is within **2 km** of you the alert is counted but not sent: the picture is 11–16 minutes old, so whatever that cell brought has already fallen where you can see it. The all-clear follows as usual.
 | ✅ **All-clear** | Three consecutive new radar images stay below the watch value | `Rischio grandine cessato`, with the event's peak |
 
 **Bounded by construction.** One hail event sends at most one message per level — so at most two — plus one all-clear, whatever the cell does. Levels only ever escalate within an event, so a cell flickering around a threshold cannot repeat a message. The all-clear counts *radar images*, not polls: the radar publishes every 5 minutes and polling every minute would otherwise "confirm" the same picture five times.

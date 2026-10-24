@@ -155,7 +155,7 @@ class RadiusClampTest(unittest.TestCase):
 
     def test_a_tiny_radius_is_clamped(self):
         monitor = SF.StormFrontLiveMonitor(config(radius_km=2), send_ok, "UTC")
-        self.assertEqual(monitor.radius_km, 10.0)
+        self.assertEqual(monitor.radius_km, 20.0)
 
     def test_an_unknown_ring_count_falls_back(self):
         monitor = SF.StormFrontLiveMonitor(config(ring_count=9), send_ok, "UTC")
@@ -275,7 +275,7 @@ class FormattingTest(unittest.TestCase):
         cases = [
             (ring_alert(track=TRACK_CLOSING), "Rotta costante"),
             (ring_alert(ring=4, ring_edge=6.0, track=TRACK_CLOSING),
-             "Sei sotto il temporale"),
+             "Temporale molto vicino"),
             (ring_alert(track=TRACK_GRAZING, pass_bearing_deg=10.0), "Ti sfiora"),
             (ring_alert(track=TRACK_UNKNOWN), "non ancora determinabile"),
             (ring_alert(track=TRACK_UNKNOWN, new_cell=True), "Nuovo nucleo"),

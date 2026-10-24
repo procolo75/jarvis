@@ -21,7 +21,7 @@ Runtime settings for the DRADIS agent. Saved to `/data/dradis_settings.json`, ef
 | Agent instructions | `You are DRADIS, a versatile AI assistant.` | System prompt — role, behaviour, persistent facts about you. |
 | Startup message | `✅ DRADIS online and ready.` | Telegram message sent when the add-on starts. |
 | Conversation history | `true` | Prepend the last N exchanges as context. |
-| Conversation history depth | `2` | Past exchanges kept in context (resets on restart). |
+| Conversation history depth | `2` | Past exchanges kept in context (resets on restart). Scheduled task answers are kept too. |
 | Max completion tokens | `2048` | Caps the reply (`max_tokens`) so prompt+reply fit the context window. Keep 2048 for Groq 8K. |
 | Sampling temperature | `0.2` | Low keeps the number of tool rounds — and so the token cost of a task — the same on every run. |
 | Max tool rounds | `3` | How many times the model may call tools before it must answer. Every round re-sends the whole conversation. |
@@ -33,6 +33,18 @@ Runtime settings for the DRADIS agent. Saved to `/data/dradis_settings.json`, ef
 **Model loading by provider:** OpenRouter 🔄 fetches free ≥30B tool-calling models (⚡ speed-tests, keeps top 5); OpenAI fetches the GPT-4o family; GitHub Models / Gemini use fixed presets; Groq 🔄 fetches its LLM models (Whisper excluded).
 
 ---
+
+## Settings → Providers
+
+The plan behind each API key (keys stay in the add-on Configuration tab; 🟢 = configured). DRADIS sizes every request to the tightest of the model's window and these limits, for primary and fallback separately.
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| Tokens / min | `0` | Rolling 60-second budget. `0` = 8000 for Groq, no cap elsewhere. |
+| Max tokens / request | `0` | Largest single request. `0` = 32 000 for Cloudflare, no cap elsewhere. |
+| Test connection | — | Lists the provider's models with the configured key; for Cloudflare checks account ID and token together. |
+
+Cloudflare Workers AI bills *Neurons* against a daily allowance (10,000 free) instead of a minute; a typical turn costs 50–250 Neurons, and an exhausted allowance goes straight to the fallback.
 
 ## Settings → Car Mode
 

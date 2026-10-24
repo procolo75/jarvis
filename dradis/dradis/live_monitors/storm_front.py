@@ -52,7 +52,7 @@ from .position_core import MAX_PLAUSIBLE_KMH
 from .snapshot import Snapshot, describe_origin, origin_line, preview_alert
 from .storm_front_core import (
     CLEAR_DWELL_SEC, EVENT_IDLE, OBSERVE_FACTOR, POLL_INTERVAL_SEC, WINDOW_MIN,
-    TRACK_CLOSING, TRACK_GRAZING,
+    STORM_MIN_RADIUS_KM, TRACK_CLOSING, TRACK_GRAZING,
     ClearAlert, RingAlert, StormFrontTracker,
     angle_delta, build_frame, clamp_radius, clamp_ring_count, ring_edges,
 )
@@ -158,7 +158,7 @@ class StormFrontLiveMonitor:
         # The shared LiveMonitorPayload defaults radius_km to 100, which this
         # algorithm is not designed for — clamp loudly rather than trust it.
         raw_radius = cfg.get("radius_km", 30)
-        self.radius_km  = clamp_radius(raw_radius)
+        self.radius_km  = clamp_radius(raw_radius, STORM_MIN_RADIUS_KM)
         if abs(float(raw_radius or 0) - self.radius_km) > 0.01:
             _LOGGER.warning("[StormFront] '%s' radius %s km clamped to %.0f km",
                             self.name, raw_radius, self.radius_km)
@@ -604,10 +604,12 @@ class StormFrontLiveMonitor:
             return self._fmt_clear(alert)
         return self._fmt_ring(alert)
 
+    # The innermost heading names a distance, not "over you": by then the user
+    # can see and hear it, and the alert's job was to arrive before that.
     _RING_HEADS_IT = ["⛈️ <b>Temporale nel raggio", "⚡ <b>Temporale più vicino",
-                      "🟠 <b>Temporale vicino", "🔴 <b>Temporale sopra di te"]
+                      "🟠 <b>Temporale vicino", "🔴 <b>Temporale molto vicino"]
     _RING_HEADS_EN = ["⛈️ <b>Storm within range", "⚡ <b>Storm closing in",
-                      "🟠 <b>Storm nearby", "🔴 <b>Storm overhead"]
+                      "🟠 <b>Storm nearby", "🔴 <b>Storm very close"]
 
     def _head(self, alert: RingAlert) -> str:
         heads = self._RING_HEADS_IT if self.language == "it" else self._RING_HEADS_EN
@@ -619,8 +621,6 @@ class StormFrontLiveMonitor:
 
     def _track_line(self, alert: RingAlert) -> str:
         it = self.language == "it"
-        if alert.is_innermost and alert.track != TRACK_GRAZING:
-            return "🧭 Sei sotto il temporale" if it else "🧭 You are under the storm"
         if alert.track == TRACK_CLOSING:
             return ("🧭 Rotta costante: ti arriva addosso" if it
                     else "🧭 Constant bearing: heading straight for you")
@@ -817,6 +817,12 @@ class StormFrontMonitorManager:
             existing = self._monitors.get(mid)
             if (existing and self._fingerprints.get(mid) == fingerprint
                     and existing.is_running()):
+                # Unchanged where it matters, so it keeps running — but HOW it
+                # delivers is rebuilt on every save. The voice switch and its
+                # quiet hours are not in the fingerprint (changing them must not
+                # throw away a storm in progress), so without this the send
+                # function baked at start kept speaking after the voice was off.
+                existing._send = make_send_fn(cfg)
                 continue                      # unchanged — leave the storm alone
             self._fingerprints[mid] = fingerprint
             replacement = StormFrontLiveMonitor(cfg, make_send_fn(cfg), tz_name)
@@ -896,7 +902,7 @@ def migrate_lightning_configs(configs: list[dict]) -> tuple[list[dict], int]:
         # The old default radius was 100 km — far outside this algorithm's range.
         old_radius = float(cfg.get("radius_km", 100) or 100)
         cfg["radius_km"] = 30.0 if old_radius > MAX_MIGRATED_RADIUS_KM \
-            else clamp_radius(old_radius)
+            else clamp_radius(old_radius, STORM_MIN_RADIUS_KM)
         cfg.setdefault("ring_count", 4)
         cfg.setdefault("chart", True)
         cfg.pop("sensitivity", None)

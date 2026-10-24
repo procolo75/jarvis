@@ -352,5 +352,38 @@ class FootballReloadTest(unittest.IsolatedAsyncioTestCase):
         self.assertIsNot(self.manager._monitors["f1"], first)
 
 
+class VoiceSwitchTest(unittest.TestCase):
+    """Turning the voice off must reach a monitor that keeps running. The switch
+    is deliberately not in the fingerprint — changing it must not throw away a
+    storm in progress — so the send function has to be rebound on every save."""
+
+    def _check(self, manager, cfg):
+        class Running:
+            _send = "old"
+            def is_running(self):
+                return True
+        from live_monitors import rain_front, storm_front, hail_front
+        fp = {rain_front.RainFrontMonitorManager: rain_front._fingerprint,
+              storm_front.StormFrontMonitorManager: storm_front._fingerprint,
+              hail_front.HailFrontMonitorManager: hail_front._fingerprint}[type(manager)]
+        existing = Running()
+        manager._monitors[cfg["id"]] = existing
+        manager._fingerprints[cfg["id"]] = fp(cfg, "UTC")
+        manager.reload([{**cfg, "speak_alerts": False}], lambda c: ("new", c["speak_alerts"]), "UTC")
+        self.assertIs(manager._monitors[cfg["id"]], existing)      # not restarted
+        self.assertEqual(existing._send, ("new", False))            # but rebound
+
+    def test_rain_storm_and_hail(self):
+        from live_monitors.rain_front import RainFrontMonitorManager
+        from live_monitors.storm_front import StormFrontMonitorManager
+        from live_monitors.hail_front import HailFrontMonitorManager
+        for kind, mgr in (("rain_front", RainFrontMonitorManager()),
+                          ("storm_front", StormFrontMonitorManager()),
+                          ("hail_front", HailFrontMonitorManager())):
+            with self.subTest(kind):
+                self._check(mgr, {"id": "m1", "type": kind, "enabled": True,
+                                  "speak_alerts": True})
+
+
 if __name__ == "__main__":
     unittest.main()

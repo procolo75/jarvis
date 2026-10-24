@@ -36,6 +36,9 @@ PROVIDERS = [
     {"id": "github",     "label": "GitHub Models", "base_url": "https://models.inference.ai.azure.com"},
     {"id": "gemini",     "label": "Gemini",        "base_url": "https://generativelanguage.googleapis.com/v1beta/openai/"},
     {"id": "groq",       "label": "Groq",          "base_url": "https://api.groq.com/openai/v1"},
+    # The account id is part of the path; `provider_base_url` fills it in.
+    {"id": "cloudflare", "label": "Cloudflare Workers AI",
+     "base_url": "https://api.cloudflare.com/client/v4/accounts/{cloudflare_account_id}/ai/v1"},
 ]
 
 _PROVIDER_KEY_MAP = {
@@ -44,7 +47,25 @@ _PROVIDER_KEY_MAP = {
     "github":     "github_token",
     "gemini":     "gemini_api_key",
     "groq":       "groq_api_key",
+    "cloudflare": "cloudflare_api_token",
 }
+
+# Non-secret add-on options a provider's base URL is built from.
+PROVIDER_URL_PARAMS = ("cloudflare_account_id",)
+
+# Function calling confirmed in Cloudflare's model docs, free plan only (the
+# paid-only GLM 5.x / Kimi / DeepSeek V4 would fail on a free account). Ordered
+# by how many DRADIS turns fit in the 10,000 free daily Neurons.
+CLOUDFLARE_MODELS = [
+    {"id": "@cf/zai-org/glm-4.7-flash",                "name": "GLM 4.7 Flash · 131K · ~200 turns/day"},
+    {"id": "@cf/qwen/qwen3-30b-a3b-fp8",               "name": "Qwen3 30B A3B · 32K · ~220 turns/day"},
+    {"id": "@cf/google/gemma-4-26b-a4b-it",            "name": "Gemma 4 26B · 256K · ~145 turns/day"},
+    {"id": "@cf/meta/llama-4-scout-17b-16e-instruct",  "name": "Llama 4 Scout · 131K · ~50 turns/day"},
+    {"id": "@cf/openai/gpt-oss-120b",                  "name": "gpt-oss 120B · 128K · ~45 turns/day"},
+    {"id": "@cf/openai/gpt-oss-20b",                   "name": "gpt-oss 20B · 128K · ~80 turns/day"},
+    {"id": "@cf/meta/llama-3.3-70b-instruct-fp8-fast", "name": "Llama 3.3 70B · 24K · ~40 turns/day"},
+    {"id": "@cf/mistralai/mistral-small-3.1-24b-instruct", "name": "Mistral Small 3.1 · 128K · ~45 turns/day"},
+]
 
 GITHUB_MODELS = [
     {"id": "gpt-4o",                      "name": "GPT-4o"},
@@ -70,7 +91,7 @@ GEMINI_MODELS = [
 
 SETTINGS_KEYS = [
     "provider", "agent_instructions", "model", "fallback_provider", "fallback_model",
-    "max_tokens", "temperature", "tool_call_limit", "tpm_limit",
+    "max_tokens", "temperature", "tool_call_limit", "provider_limits",
     "token_usage_enabled", "tools_usage_enabled", "tool_errors_enabled",
     "history_enabled", "history_depth", "startup_message", "timezone",
     "car_mode_enabled",
@@ -104,11 +125,13 @@ SETTINGS_DEFAULTS: dict = {
     # that is refused. Low, not zero: zero makes some providers loop on a tool.
     "temperature":          0.2,
     "tool_call_limit":      3,
-    # The provider's rolling tokens-per-minute ceiling. 0 = whatever we know about
-    # the provider (Groq's free tier is 8000; nobody else is capped here). It is a
-    # plan, not a property of the model, so it belongs in the settings: a paid tier
-    # is a number to change, not a release to wait for.
-    "tpm_limit":            0,
+    # Per provider: {"groq": {"tpm": 8000}, "cloudflare": {"max_request": 32000}}.
+    # `tpm` is the rolling tokens-per-minute ceiling, `max_request` the largest
+    # single request. 0 or missing = whatever DRADIS knows about the provider
+    # (Groq 8000/min, Cloudflare 32K/request, nobody else capped). A plan, not a
+    # property of the model — and of each provider's own key, so one figure for
+    # all of them was wrong the moment primary and fallback sat on different ones.
+    "provider_limits":      {},
     "token_usage_enabled":  False,
     "tools_usage_enabled":  False,
     "tool_errors_enabled":  True,
@@ -215,7 +238,52 @@ _LEGACY_AGENT_MAP = {
 # ── Migration helpers ─────────────────────────────────────────────────────────
 
 def _migrate_settings(data: dict) -> dict:
-    return {_LEGACY_SETTINGS_MAP.get(k, k): v for k, v in data.items()}
+    return migrate_provider_limits({_LEGACY_SETTINGS_MAP.get(k, k): v for k, v in data.items()})
+
+
+# Providers that did not exist when the global `tpm_limit` did: it can never have
+# been tuned against them. Cloudflare has no per-minute budget at all.
+_NO_LEGACY_TPM = {"cloudflare"}
+
+
+def migrate_provider_limits(data: dict) -> dict:
+    """Hand a pre-4.17 global `tpm_limit` to the provider it was set for: the
+    primary, or the fallback when the primary is one it cannot have been meant
+    for. Pure, and applied by every reader until `persist_provider_limits()`
+    has written the result at startup.
+
+    Persisting matters: evaluated on each read, the target followed whatever the
+    primary was at that moment — switch the primary to Cloudflare and Groq's 8000
+    per minute became Cloudflare's, an 8K ceiling on a provider with none."""
+    if "provider_limits" in data:
+        return data
+    try:
+        tpm = int(data.get("tpm_limit") or 0)
+    except (TypeError, ValueError):
+        tpm = 0
+    if tpm <= 0:
+        return data
+    candidates = [data.get("provider") or SETTINGS_DEFAULTS["provider"],
+                  (data.get("fallback_provider") or "").strip()]
+    target = next((p for p in candidates if p and p not in _NO_LEGACY_TPM), None)
+    data = dict(data)
+    data["provider_limits"] = {target: {"tpm": tpm}} if target else {}
+    return data
+
+
+def persist_provider_limits() -> bool:
+    """Write the `tpm_limit` → `provider_limits` move once, at startup, and drop
+    the old key. Returns True if anything changed. Idempotent."""
+    try:
+        raw = json.loads(SETTINGS_FILE.read_text())
+    except Exception:
+        return False
+    if "tpm_limit" not in raw:
+        return False
+    raw = migrate_provider_limits(raw)
+    raw.pop("tpm_limit", None)
+    SETTINGS_FILE.write_text(json.dumps(raw, ensure_ascii=False, indent=2))
+    return True
 
 
 def _migrate_agent(agent: dict) -> dict:
@@ -552,11 +620,26 @@ def _get_provider_api_key(provider_id: str) -> str:
         return ""
 
 
+def provider_base_url(provider_id: str, params: dict) -> str:
+    """The provider's base URL with its placeholders filled from `params`
+    (add-on options). Unknown provider → the first one, as before."""
+    entry = next((p for p in PROVIDERS if p["id"] == provider_id), PROVIDERS[0])
+    url = entry["base_url"]
+    for key in PROVIDER_URL_PARAMS:
+        url = url.replace("{" + key + "}", str(params.get(key, "")).strip())
+    return url
+
+
+def provider_url_params() -> dict:
+    try:
+        opts = json.loads(OPTIONS_FILE.read_text())
+    except Exception:
+        return {}
+    return {k: opts.get(k, "") for k in PROVIDER_URL_PARAMS}
+
+
 def _get_provider_base_url(provider_id: str) -> str:
-    for p in PROVIDERS:
-        if p["id"] == provider_id:
-            return p["base_url"]
-    return PROVIDERS[0]["base_url"]
+    return provider_base_url(provider_id, provider_url_params())
 
 
 def _get_tavily_key() -> str:

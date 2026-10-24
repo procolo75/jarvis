@@ -284,5 +284,29 @@ class SharedHistory(unittest.IsolatedAsyncioTestCase):
                          ["che tempo fa domani?", "Domani sole."])
 
 
+class Notifications(unittest.TestCase):
+    """What DRADIS sends on its own can be answered: it is in the history."""
+
+    def setUp(self):
+        self.st = import_bot_state()
+        self.st._history.clear()
+        self.addCleanup(self.st._history.clear)
+
+    def test_a_report_is_an_assistant_turn_in_plain_text(self):
+        self.st.save_notification("Task 'Meteo'", "<b>Domani</b> sole &amp; vento",
+                                  {"history_enabled": True, "history_depth": 2})
+        self.assertEqual(self.st.history_messages("x"),
+                         [{"role": "assistant", "content": "[Task 'Meteo']\nDomani sole & vento"}])
+
+    def test_a_long_report_is_capped(self):
+        self.st.save_notification("Monitor 'Sisma'", "x" * 5000,
+                                  {"history_enabled": True, "history_depth": 2})
+        self.assertLess(len(self.st._history[0]["content"]), 1600)
+
+    def test_nothing_is_kept_with_memory_off(self):
+        self.st.save_notification("Task 'Meteo'", "sole", {"history_enabled": False})
+        self.assertEqual(self.st._history, [])
+
+
 if __name__ == "__main__":
     unittest.main()

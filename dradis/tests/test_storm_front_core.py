@@ -391,6 +391,10 @@ class RingGeometryTest(unittest.TestCase):
         self.assertEqual(C.clamp_radius(100.0), C.MAX_RADIUS_KM)
         self.assertEqual(C.clamp_radius(2.0), C.MIN_RADIUS_KM)
         self.assertEqual(C.clamp_radius("bad"), 30.0)
+        self.assertEqual(C.clamp_radius(10.0, C.RAIN_MIN_RADIUS_KM),
+                         C.RAIN_MIN_RADIUS_KM)
+        self.assertEqual(C.clamp_radius(10.0, C.STORM_MIN_RADIUS_KM),
+                         C.STORM_MIN_RADIUS_KM)
         self.assertEqual(C.clamp_ring_count(9), C.DEFAULT_RING_COUNT)
         self.assertEqual(C.clamp_ring_count(3), 3)
 

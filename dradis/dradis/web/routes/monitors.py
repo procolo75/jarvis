@@ -259,7 +259,8 @@ async def test_radar(latitude: float | None = Query(default=None),
     from live_monitors.radar import PRODUCT_RAIN, fetch_latest
     from live_monitors.radar_core import (
         coverage_fraction, peak_in_disc, sample)
-    from live_monitors.storm_front_core import OBSERVE_FACTOR, clamp_radius
+    from live_monitors.storm_front_core import (
+        OBSERVE_FACTOR, RAIN_MIN_RADIUS_KM, clamp_radius)
 
     try:
         grid, lag_sec = await fetch_latest(PRODUCT_RAIN)
@@ -280,7 +281,7 @@ async def test_radar(latitude: float | None = Query(default=None),
     if latitude is None or longitude is None:
         return result
 
-    observe = clamp_radius(radius_km) * OBSERVE_FACTOR
+    observe = clamp_radius(radius_km, RAIN_MIN_RADIUS_KM) * OBSERVE_FACTOR
     coverage = coverage_fraction(grid, (latitude, longitude), observe)
     value = sample(grid, latitude, longitude)
     result.update({
@@ -288,7 +289,7 @@ async def test_radar(latitude: float | None = Query(default=None),
         "observe_radius_km": round(observe, 1),
         "mmh_here": value,
         "peak_mmh": peak_in_disc(grid, (latitude, longitude),
-                                 clamp_radius(radius_km)),
+                                 clamp_radius(radius_km, RAIN_MIN_RADIUS_KM)),
     })
     if value is None:
         result["status"] = "no_coverage"

@@ -4,7 +4,7 @@
 
 - Home Assistant with Supervisor (HAOS or Supervised)
 - A Telegram bot — created via [@BotFather](https://t.me/BotFather)
-- An API key for at least one supported LLM provider (OpenRouter, OpenAI, GitHub Models, Gemini, or Groq)
+- An API key for at least one supported LLM provider (OpenRouter, OpenAI, GitHub Models, Gemini, Groq, or Cloudflare Workers AI)
 - *(Optional)* A [Tavily](https://tavily.com) API key for the Web Search tool
 - *(Optional)* A [Groq](https://console.groq.com) API key for voice transcription
 - *(Optional)* Google Cloud OAuth2 credentials — one credential covers Google Calendar, Gmail, and Google Tasks

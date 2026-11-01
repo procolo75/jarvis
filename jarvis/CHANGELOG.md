@@ -1,5 +1,18 @@
 # CHANGELOG
 
+## [5.0.4] - 2026-11-01
+
+- **Fix — the Google Drive backup now carries `assist_token`.** After a restore, HA Assist keeps
+  working with the same secret, even where discovery is not available to update the integration.
+- **Change — two files leave the backup.** `storm_front_state.json` expires after 30 minutes, so a
+  copy was always stale, and the legacy `agents.json` is read by nothing at runtime. Copies already
+  on Drive stay there but are no longer updated.
+- **Docs — the restore procedure is corrected.** `options.json` cannot be restored by copying it: the
+  Supervisor rewrites it when the add-on starts, so its values go in the Configuration tab. The lists
+  of persistent and backed-up files now match the code.
+- **Test — every file in `/data` must be backed up or excluded on purpose**, so a new one cannot
+  silently stay out.
+
 ## [5.0.3] - 2026-11-01
 
 - **Fix — no more Python end-of-life warning from `google.api_core` in the log.** The add-on image

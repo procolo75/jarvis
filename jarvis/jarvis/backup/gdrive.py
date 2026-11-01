@@ -13,11 +13,19 @@ Files backed up:
   /data/google_calendar_token.json
   /data/google_gmail_token.json
   /data/google_tasks_token.json
+  /data/gdrive_backup_token.json
+  /data/assist_token              — secret of the HA Assist integration
   /data/tasks.json
   /data/monitors.json
   /data/live_monitors.json
   /data/ha_monitors.json
-  /data/agents.json
+
+Left out on purpose:
+  /data/{storm,rain,hail}_front_state.json — expire within an hour, so any copy
+                                             is stale by the time it is restored
+  /data/agents.json                        — legacy, read by nothing at runtime
+
+tests/test_backup_files.py fails when a new /data file is in neither list.
 """
 
 import asyncio
@@ -37,12 +45,11 @@ _BACKUP_FILES = [
     Path("/data/google_gmail_token.json"),
     Path("/data/google_tasks_token.json"),
     Path("/data/gdrive_backup_token.json"),
+    Path("/data/assist_token"),
     Path("/data/tasks.json"),
     Path("/data/monitors.json"),
     Path("/data/live_monitors.json"),
-    Path("/data/storm_front_state.json"),
     Path("/data/ha_monitors.json"),
-    Path("/data/agents.json"),
 ]
 
 

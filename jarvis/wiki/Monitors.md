@@ -313,11 +313,15 @@ Uploads all sensitive JARVIS configuration files to a "JARVIS Backup" folder on 
 | `google_gmail_token.json` | Gmail OAuth2 token |
 | `google_tasks_token.json` | Google Tasks OAuth2 token |
 | `gdrive_backup_token.json` | Google Drive Backup OAuth2 token |
+| `assist_token` | Secret of the Home Assistant JARVIS integration (HA Assist) |
 | `tasks.json` | Scheduled tasks |
 | `monitors.json` | Scheduled monitors |
 | `live_monitors.json` | Live monitors |
 | `ha_monitors.json` | HA monitors |
-| `agents.json` | Custom agents |
+
+Left out on purpose: the storm, rain and hail front state files, which expire within an hour, and the legacy `agents.json`.
+
+Each run overwrites the previous copy on Drive: the folder holds the latest backup, not a history.
 
 **Setup:**
 
@@ -325,7 +329,12 @@ Uploads all sensitive JARVIS configuration files to a "JARVIS Backup" folder on 
 2. Create a monitor of type ☁️ Google Drive Backup with your preferred cron schedule.
 3. No location field is required.
 
-**Restore procedure:** download the files from the "JARVIS Backup" folder on Google Drive and place them in `/data/` inside the HA add-on container.
+**Restore procedure:**
+
+1. Stop the add-on.
+2. Download the files from the "JARVIS Backup" folder on Google Drive and place them in `/data/` inside the HA add-on container, except `options.json`.
+3. Enter the values from `options.json` in the add-on's **Configuration** tab. Copying the file does not work: the Supervisor keeps the options in its own store and rewrites this file when the add-on starts.
+4. Start the add-on.
 
 **Example configuration:**
 

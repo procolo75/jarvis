@@ -18,6 +18,9 @@ All persistent data is stored in the Supervisor `/data/` folder, which survives 
 | `/data/google_calendar_token.json` | Google Calendar OAuth2 token (auto-refreshed) |
 | `/data/google_gmail_token.json` | Gmail OAuth2 token (auto-refreshed) |
 | `/data/google_tasks_token.json` | Google Tasks OAuth2 token (auto-refreshed) |
+| `/data/gdrive_backup_token.json` | Google Drive Backup OAuth2 token — used by the ☁️ Google Drive Backup monitor (auto-refreshed) |
+
+The [Google Drive Backup monitor](Monitors) lists which of these files it uploads and how to restore them.
 
 ---
 

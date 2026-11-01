@@ -1,0 +1,17 @@
+{
+  "config": {
+    "step": {
+      "hassio_confirm": {
+        "title": "JARVIS",
+        "description": "Usare l'add-on JARVIS ({url}) come agente di conversazione? Poi scegli JARVIS nel tuo assistente vocale e attiva \"Preferisci gestire i comandi localmente\"."
+      },
+      "user": {
+        "title": "JARVIS",
+        "description": "URL e token dell'add-on JARVIS (pannello HA Assist dell'add-on).",
+        "data": {"url": "URL", "token": "Token"}
+      }
+    },
+    "error": {"cannot_connect": "JARVIS non raggiungibile, o token errato."},
+    "abort": {"already_configured": "JARVIS è già configurato."}
+  }
+}

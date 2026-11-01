@@ -1,0 +1,869 @@
+"""
+bot/handlers.py
+────────────────
+Telegram message and callback query handlers:
+  handle_message, handle_voice, cmd_menu, cmd_tasks, cmd_monitors,
+  handle_task_callback, handle_monitor_callback, handle_live_monitor_callback.
+"""
+
+import asyncio
+import html
+import os
+import tempfile
+import time
+
+from telegram import BotCommand, InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram.constants import ParseMode
+from telegram.ext import ContextTypes
+
+import bot.state as _state
+from bot.scheduler import (
+    run_scheduled_task,
+    run_scheduled_monitor,
+    _live_status_dispatcher,
+)
+from bot.stations import format_stations
+from geocode import geocode
+from live_monitors import gauges as gauge_source
+from live_monitors.gauges_core import READOUT_PRODUCTS
+from live_monitors.ha import ha_monitor_manager
+from live_monitors.position import position_manager
+from live_monitors.rain_front import rain_front_monitor_manager
+from live_monitors.hail_front import hail_front_monitor_manager
+# `_tz` rather than a local ZoneInfo: its docstring records that every message
+# in the codebase has to resolve the timezone through this one function, because
+# the container's clock is UTC and a second implementation drifts.
+from live_monitors.snapshot import (_tz, describe_origin_config, format_caption,
+                                    format_origin)
+from live_monitors.storm_front import storm_front_monitor_manager
+from web.store import (
+    load_tasks,
+    load_monitors,
+    load_live_monitors,
+    load_ha_monitors,
+    load_positions,
+    toggle_task,
+    toggle_monitor,
+    toggle_live_monitor,
+    toggle_ha_monitor,
+    set_car_mode,
+)
+
+COMMANDS = [
+    BotCommand("info",       "Status and configuration of all agents"),
+    BotCommand("menu",       "List all available commands"),
+    BotCommand("tasks",      "List and run tasks (all, including disabled)"),
+    BotCommand("monitors",   "List and run monitors (all, including disabled)"),
+    BotCommand("hamonitors", "List HA monitors and their status"),
+    BotCommand("rain",       "Radar snapshot: what a rain monitor sees right now"),
+    BotCommand("storm",      "Radar snapshot: what a storm monitor sees right now"),
+    BotCommand("stations",   "Ground station readings near you, or near a place"),
+    BotCommand("manage",     "Enable / disable tasks and monitors"),
+    BotCommand("car",        "Car Mode: plain spoken messages, no icons or charts"),
+    BotCommand("gcalauth",   "Connect Google Calendar (OAuth2)"),
+    BotCommand("gmailauth",  "Connect Gmail (OAuth2)"),
+    BotCommand("gtasksauth",  "Connect Google Tasks (OAuth2)"),
+    BotCommand("backupauth",  "Connect Google Drive for automatic backups (OAuth2)"),
+]
+
+
+# ── Message handler ───────────────────────────────────────────────────────────
+
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != _state.ALLOWED_CHAT_ID:
+        return
+    settings = _state.read_settings()
+    model    = settings.get("model", _state.SETTINGS_DEFAULTS["model"])
+
+    turn = await _state.chat_turn(update.message.text, settings, source="chat")
+    if turn.error:
+        await _state._send_error_telegram(turn.error)
+        await update.message.reply_text(turn.error, parse_mode=ParseMode.HTML)
+        return
+    for notice in turn.notices:
+        await _state._send_error_telegram(notice)
+
+    footer = _state.reply_footer(settings, turn.result)
+    if turn.text:
+        body, parse_mode = _state.for_car(_state.md_to_html(turn.text) + footer)
+    else:
+        body, parse_mode = _state.for_car(
+            f"⚠️ Model <code>{html.escape(model)}</code> returned no text.{footer}"
+        )
+    await update.message.reply_text(body, parse_mode=parse_mode)
+
+
+# ── Voice handler ─────────────────────────────────────────────────────────────
+
+async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != _state.ALLOWED_CHAT_ID:
+        return
+    settings = _state.read_settings()
+    if not settings.get("voice_enabled", False):
+        await update.message.reply_text("🎙️ Voice agent is not enabled. You can enable it from the Web UI.")
+        return
+
+    voice_model     = settings.get("voice_model",    _state.SETTINGS_DEFAULTS["voice_model"])
+    voice_language  = settings.get("voice_language", _state.SETTINGS_DEFAULTS["voice_language"])
+    send_transcript = settings.get("voice_send_transcription", True)
+    t0    = time.time()
+    voice = update.message.voice
+
+    try:
+        tg_file = await context.bot.get_file(voice.file_id)
+        with tempfile.NamedTemporaryFile(suffix=".ogg", delete=False) as tmp:
+            tmp_path = tmp.name
+        await tg_file.download_to_drive(tmp_path)
+    except Exception as e:
+        await update.message.reply_text(
+            f"❌ Could not download voice message: {html.escape(str(e))}",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
+    try:
+        transcription = await _state.transcribe_voice(tmp_path, voice_model, voice_language)
+    except Exception as e:
+        await update.message.reply_text(
+            f"❌ Transcription error: {html.escape(str(e))}",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+    finally:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+
+    print(f"[JARVIS] Voice transcribed in {time.time() - t0:.1f}s: {transcription[:80]!r}")
+
+    if send_transcript:
+        await update.message.reply_text(f"🎙️ {html.escape(transcription)}", parse_mode=ParseMode.HTML)
+
+    class _VoiceMessage:
+        def __init__(self, real_msg, text: str):
+            self._msg = real_msg
+            self.text = text
+        def __getattr__(self, name):
+            return getattr(self._msg, name)
+
+    class _VoiceUpdate:
+        def __init__(self, real_update: Update, text: str):
+            self.effective_user = real_update.effective_user
+            self.message        = _VoiceMessage(real_update.message, text)
+
+    await handle_message(_VoiceUpdate(update, transcription), context)
+
+
+# ── Menu / task / monitor commands ────────────────────────────────────────────
+
+async def cmd_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != _state.ALLOWED_CHAT_ID:
+        return
+    lines = "\n".join(f"/{c.command} — {c.description}" for c in COMMANDS)
+    await update.message.reply_text(f"<b>JARVIS Commands:</b>\n\n{lines}", parse_mode=ParseMode.HTML)
+
+
+# ── List helpers (shared by /tasks, /monitors, /hamonitors, /manage) ──────────
+
+def _by_name(items: list) -> list:
+    """Sort a list of config dicts alphabetically by name (case-insensitive)."""
+    return sorted(items, key=lambda x: (x.get("name") or "").lower())
+
+
+def _monitor_detail(m: dict) -> str:
+    """Short parenthetical detail for a scheduled monitor (area/location)."""
+    if m.get("type") == "seismic":
+        return m.get("seismic_area", "?")
+    return m.get("location", "?")
+
+
+def _live_monitor_detail(m: dict) -> str:
+    """Short parenthetical detail for a live monitor."""
+    t = m.get("type")
+    if t == "seismic":
+        return ", ".join(m.get("areas", [])) or "—"
+    if t == "football_betting":
+        return "⚽ live"
+    # A monitor following a position is named by the position, not by `location`:
+    # that field is only its fallback, and showing it here would name the place
+    # the monitor is watching only in the case it has never heard from the phone.
+    position_id = (m.get("position_id") or "").strip()
+    if position_id:
+        name = next((p.get("name") for p in load_positions()
+                     if p.get("id") == position_id), None)
+        return f"📍 {name}" if name else "⚠️ missing position (using the fallback)"
+    return m.get("location", "?")
+
+
+# ── Live monitor status, in words ─────────────────────────────────────────────
+#
+# A live monitor reports one of five states, and until v4.8.2 three of them
+# arrived as "🟠 Degraded (no data from the feed)" — a sentence that named a
+# symptom and left the reader to guess at the cause. The worst of the three was
+# the commonest: a storm front subscribes to a geohash cell about 110 km across,
+# so outside a storm nothing is published from it and a perfectly healthy monitor
+# was badged 🟠 for hours at a stretch. A warning that is on almost always is not
+# a warning, and it buried the one case that needs acting on.
+#
+# `quiet` is now healthy and says why it is silent; `degraded` means the feed
+# itself is failing; `blind` means the monitor knows it must not speak, which is
+# a different instruction to the reader and deserves a different badge.
+
+_LIVE_ICONS = {"running": "🟢", "quiet": "🟢", "degraded": "🟠", "blind": "🟠"}
+
+
+def _live_icon(status: str) -> str:
+    return _LIVE_ICONS.get(status, "🔴")
+
+
+def _live_badge(status: str, mtype: str, monitor_id: str, it: bool) -> str:
+    """The status as a full line, saying what is wrong rather than that
+    something is."""
+    if status == "running":
+        return "🟢 Attivo" if it else "🟢 Running"
+
+    if status == "quiet":
+        # Storm fronts only: the radar publishes on a timer whatever the weather,
+        # so a silent rain feed is never this.
+        return ("🟢 Attivo — feed connesso, nessun fulmine nel raggio da 15 min"
+                if it else
+                "🟢 Running — feed connected, no lightning within range for 15 min")
+
+    if status == "blind":
+        if mtype in ("rain_front", "hail_front"):
+            manager = (rain_front_monitor_manager if mtype == "rain_front"
+                       else hail_front_monitor_manager)
+            monitor = manager.get(monitor_id)
+            why = monitor.blind_reason_label("it" if it else "en") if monitor else ""
+        else:
+            why = ("non sa da dove misurare" if it
+                   else "it does not know where to measure from")
+        head = "🟠 Cieco" if it else "🟠 Blind"
+        tail = (" — non manda avvisi, e non manda nemmeno il cessato allarme"
+                if it else
+                " — no alerts, and no all-clear either")
+        return f"{head}: {why}{tail}" if why else f"{head}{tail}"
+
+    if status == "degraded":
+        if mtype in ("rain_front", "hail_front"):
+            return ("🟠 Degradato — il radar non risponde o l'ultima immagine è "
+                    "troppo vecchia" if it else
+                    "🟠 Degraded — the radar is not answering, or the last image "
+                    "is too old")
+        return ("🟠 Degradato — feed fulmini non connesso" if it else
+                "🟠 Degraded — lightning feed not connected")
+
+    return "🔴 Spento" if it else "🔴 Stopped"
+
+
+async def cmd_tasks(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != _state.ALLOWED_CHAT_ID:
+        return
+    tasks = load_tasks()
+    if not tasks:
+        await update.message.reply_text("No tasks configured. Add tasks from the Web UI.")
+        return
+    keyboard = []
+    for t in _by_name(tasks):
+        badge = "✅" if t.get("enabled") else "⏸"
+        keyboard.append([InlineKeyboardButton(f"{badge} {t['name']}", callback_data=f"task:{t['id']}")])
+    await update.message.reply_text(
+        "Select a task to run:",
+        reply_markup=InlineKeyboardMarkup(keyboard),
+    )
+
+
+async def cmd_monitors(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != _state.ALLOWED_CHAT_ID:
+        return
+    scheduled = load_monitors()
+    live      = load_live_monitors()
+    if not scheduled and not live:
+        await update.message.reply_text("No monitors configured. Add monitors from the Web UI.")
+        return
+    keyboard = []
+    for m in _by_name(scheduled):
+        badge  = "✅" if m.get("enabled") else "⏸"
+        keyboard.append([InlineKeyboardButton(
+            f"{badge} {m['name']} ({_monitor_detail(m)})",
+            callback_data=f"monitor:{m['id']}",
+        )])
+    for m in _by_name(live):
+        badge  = _live_icon(_live_status_dispatcher(m["id"]))
+        label  = f"{badge} {m['name']} ({_live_monitor_detail(m)})"
+        keyboard.append([InlineKeyboardButton(label, callback_data=f"live:{m['id']}")])
+    sections = []
+    if scheduled:
+        sections.append("Scheduled monitors — tap to run now:")
+    if live:
+        sections.append("Live monitors — tap to see status:")
+    await update.message.reply_text(
+        "\n\n".join(sections),
+        reply_markup=InlineKeyboardMarkup(keyboard),
+    )
+
+
+async def cmd_ha_monitors(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != _state.ALLOWED_CHAT_ID:
+        return
+    ha_monitors = load_ha_monitors()
+    if not ha_monitors:
+        await update.message.reply_text("No HA monitors configured. Add them from the Web UI.")
+        return
+    keyboard = []
+    for m in _by_name(ha_monitors):
+        status = ha_monitor_manager.status(m["id"])
+        badge  = "🟢" if status == "running" else "🔴"
+        keyboard.append([InlineKeyboardButton(f"{badge} {m['name']}", callback_data=f"ha:{m['id']}")])
+    await update.message.reply_text(
+        "HA monitors — tap to see status:",
+        reply_markup=InlineKeyboardMarkup(keyboard),
+    )
+
+
+# ── Callback query handlers ───────────────────────────────────────────────────
+
+async def handle_task_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    if query.from_user.id != _state.ALLOWED_CHAT_ID:
+        await query.answer()
+        return
+    task_id = query.data.removeprefix("task:")
+    task    = next((t for t in load_tasks() if t["id"] == task_id), None)
+    await query.answer()
+    if not task:
+        await query.message.reply_text("❌ Task not found.")
+        return
+    await query.message.reply_text(
+        f"▶️ Launching task <b>{html.escape(task['name'])}</b>…",
+        parse_mode=ParseMode.HTML,
+    )
+    asyncio.create_task(run_scheduled_task(task))
+
+
+async def handle_monitor_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    if query.from_user.id != _state.ALLOWED_CHAT_ID:
+        await query.answer()
+        return
+    monitor_id = query.data.removeprefix("monitor:")
+    monitor    = next((m for m in load_monitors() if m["id"] == monitor_id), None)
+    await query.answer()
+    if not monitor:
+        await query.message.reply_text("❌ Monitor not found.")
+        return
+    detail = (
+        monitor.get("seismic_area", "?")
+        if monitor.get("type") == "seismic"
+        else monitor.get("location", "?")
+    )
+    await query.message.reply_text(
+        f"▶️ Launching monitor <b>{html.escape(monitor['name'])}</b> ({html.escape(detail)})…",
+        parse_mode=ParseMode.HTML,
+    )
+    asyncio.create_task(run_scheduled_monitor(monitor))
+
+
+async def handle_ha_monitor_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    if query.from_user.id != _state.ALLOWED_CHAT_ID:
+        await query.answer()
+        return
+    monitor_id = query.data.removeprefix("ha:")
+    monitor    = next((m for m in load_ha_monitors() if m["id"] == monitor_id), None)
+    await query.answer()
+    if not monitor:
+        await query.message.reply_text("❌ HA monitor not found.")
+        return
+    await query.message.reply_text(describe_ha_monitor(monitor), parse_mode=ParseMode.HTML)
+
+
+def describe_ha_monitor(monitor: dict) -> str:
+    """The HA monitor card, as Telegram HTML. Also what the voice tool
+    `monitor_status` reads (bot/control.py)."""
+    status    = ha_monitor_manager.status(monitor["id"])
+    badge     = "🟢 Running" if status == "running" else "🔴 Stopped"
+    entities  = monitor.get("entities", [])
+    mode      = monitor.get("alert_mode", "llm").upper()
+    cooldown  = monitor.get("cooldown_min", 60)
+    ent_label = ", ".join(entities) if entities else "—"
+    return (
+        f"🏠 <b>{html.escape(monitor['name'])}</b>\n"
+        f"Status: {badge}\n"
+        f"Mode: {mode} — Cooldown: {cooldown} min\n"
+        f"Entities ({len(entities)}): {html.escape(ent_label)}"
+    )
+
+
+async def handle_live_monitor_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    if query.from_user.id != _state.ALLOWED_CHAT_ID:
+        await query.answer()
+        return
+    item_id = query.data.removeprefix("live:")
+    monitor = next((m for m in load_live_monitors() if m["id"] == item_id), None)
+    await query.answer()
+    if not monitor:
+        await query.message.reply_text("❌ Live monitor not found.")
+        return
+    msg = describe_live_monitor(monitor)
+    # The origin block carries a map link, and Telegram would otherwise paste an
+    # OpenStreetMap card under a four-line status message.
+    await query.message.reply_text(msg, parse_mode=ParseMode.HTML,
+                                   disable_web_page_preview=True)
+
+
+def describe_live_monitor(monitor: dict) -> str:
+    """The live monitor card, as Telegram HTML. Also what the voice tool
+    `monitor_status` reads (bot/control.py)."""
+    mtype  = monitor.get("type", "storm_front")
+    status = _live_status_dispatcher(monitor["id"])
+    badge  = _live_badge(status, mtype, monitor["id"],
+                         monitor.get("language", "it") == "it")
+    if mtype == "seismic":
+        areas = ", ".join(monitor.get("areas", [])) or "—"
+        msg = (f"🌍 <b>{html.escape(monitor['name'])}</b>\n"
+               f"Areas: {html.escape(areas)}\n"
+               f"Status: {badge}\n"
+               f"Polling: 60s")
+    elif mtype == "football_betting":
+        from live_monitors.football import _window_specs
+        windows = " · ".join(
+            f"{w.label} ({w.cap_label})" for w in _window_specs(monitor)
+        ) or "nessuna"
+        msg = (f"⚽ <b>{html.escape(monitor['name'])}</b>\n"
+               f"Tipo: Football Betting Live\n"
+               f"Finestre: {windows}\n"
+               f"Status: {badge}\n"
+               f"Polling: 300s")
+    elif mtype == "hail_front":
+        it     = monitor.get("language", "it") == "it"
+        origin = describe_origin_config(monitor, time.time())
+        lines  = [f"🧊 <b>{html.escape(monitor['name'])}</b>"]
+        lines += format_origin(origin, it, tz_name=_tz_name())
+        lines += [
+            f"Status: {badge}",
+            f"Raggio: {monitor.get('radius_km', '?')} km — "
+            f"soglie {monitor.get('watch_percent', 40):g}% / "
+            f"{monitor.get('severe_percent', 70):g}%",
+            "Al massimo 2 avvisi (allerta, grave) + 1 cessato per grandinata"
+            if it else
+            "At most 2 alerts (watch, severe) + 1 all-clear per hail event",
+        ]
+        msg = "\n".join(lines)
+    else:
+        # The `location` field is NOT where a monitor following a position looks
+        # — it is only its fallback, and this card printed it unconditionally:
+        # "📍 Roma" over a monitor centred on a phone two hundred kilometres
+        # away. The button labels stopped making that mistake in v4.1.1; the card
+        # underneath them kept making it. `describe_origin_config` resolves the
+        # same chain the monitor does, and works for a disabled one too — which
+        # is the whole reason the card exists for monitors that are switched off.
+        rain  = mtype == "rain_front"
+        it    = monitor.get("language", "it") == "it"
+        rings = monitor.get("ring_count", 4)
+        origin = describe_origin_config(monitor, time.time())
+        lines = [f"{'🌧️' if rain else '🌩️'} <b>{html.escape(monitor['name'])}</b>"]
+        lines += format_origin(origin, it, tz_name=_tz_name())
+        lines += [
+            f"Status: {badge}",
+            f"Raggio: {monitor.get('radius_km', '?')} km — {rings} anelli",
+            f"Al massimo {rings} avvisi di avvicinamento + 1 cessato "
+            f"per {'pioggia' if rain else 'temporale'} — Polling: 60s",
+        ]
+        msg = "\n".join(lines)
+    return msg
+
+
+# ── /rain and /storm — on-demand snapshots ────────────────────────────────────
+#
+# These commands PERCEIVE WITHOUT DECIDING. They rebuild the frame with the same
+# builders a poll uses, but never call evaluate() or commit() on a live tracker:
+# the bounded-message invariant rests on `notified_ring`, so a diagnostic that
+# advanced it would silence the real alert half an hour later. Every caption ends
+# by saying so, because a test tool you cannot trust is worse than none.
+
+_SNAP_KINDS = {
+    "rain":  ("rain_front",  "🌧️", rain_front_monitor_manager),
+    "storm": ("storm_front", "🌩️", storm_front_monitor_manager),
+}
+
+# Telegram caps a photo CAPTION at 1024 characters — a quarter of a text message.
+# Overflowing it fails the send outright, so the caption is trimmed rather than
+# risking the picture.
+_TG_CAPTION_MAX = 1024
+
+
+def _snapshot_configs(kind: str) -> list[dict]:
+    wanted = _SNAP_KINDS[kind][0]
+    return _by_name([m for m in load_live_monitors() if m.get("type") == wanted])
+
+
+def _build_snapshot_keyboard(kind: str, configs: list[dict]) -> InlineKeyboardMarkup:
+    rows = []
+    for m in configs:
+        badge = _live_icon(_live_status_dispatcher(m["id"]))
+        rows.append([InlineKeyboardButton(
+            f"{badge} {m['name']} ({_live_monitor_detail(m)})",
+            callback_data=f"snap:{kind}:{m['id']}")])
+    return InlineKeyboardMarkup(rows)
+
+
+async def _cmd_snapshot(update: Update, context: ContextTypes.DEFAULT_TYPE, kind: str):
+    if update.effective_user.id != _state.ALLOWED_CHAT_ID:
+        return
+    label = _SNAP_KINDS[kind][0].replace("_", " ")
+    configs = _snapshot_configs(kind)
+    if not configs:
+        await update.message.reply_text(
+            f"No {label} monitor configured. Add one from the Web UI.")
+        return
+
+    query = " ".join(context.args or []).strip().lower()
+    if query:
+        configs = [m for m in configs if query in (m.get("name") or "").lower()]
+        if not configs:
+            await update.message.reply_text(f"No {label} monitor matches “{query}”.")
+            return
+
+    if len(configs) == 1:
+        await _deliver_snapshot(update.message, kind, configs[0])
+        return
+    await update.message.reply_text(
+        f"Which {label} monitor?",
+        reply_markup=_build_snapshot_keyboard(kind, configs))
+
+
+async def cmd_rain(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await _cmd_snapshot(update, context, "rain")
+
+
+async def cmd_storm(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await _cmd_snapshot(update, context, "storm")
+
+
+async def handle_snapshot_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    if query.from_user.id != _state.ALLOWED_CHAT_ID:
+        await query.answer()
+        return
+    parts = query.data.split(":", 2)
+    await query.answer()
+    if len(parts) < 3:
+        return
+    _, kind, item_id = parts
+    cfg = next((m for m in load_live_monitors() if m["id"] == item_id), None)
+    if not cfg or kind not in _SNAP_KINDS:
+        await query.message.reply_text("❌ Monitor not found.")
+        return
+    await _deliver_snapshot(query.message, kind, cfg)
+
+
+async def _deliver_snapshot(message, kind: str, cfg: dict):
+    """Build the snapshot and send it as ONE message, picture plus caption."""
+    try:
+        snap = await _take_snapshot(kind, cfg)
+    except Exception as e:
+        await message.reply_text(f"❌ Snapshot failed: {html.escape(str(e))}")
+        return
+
+    # The picture survives Car Mode here, unlike an alert: you asked for this one,
+    # so you are looking at the phone. The CAPTION still has to be listenable, and
+    # `format_caption` is told so directly rather than left to the sanitiser —
+    # coordinates, the map link and the fix diagnostics are whole lines that only
+    # mean anything on a screen, and no amount of stripping icons fixes that.
+    # Truncate AFTER rewriting: sanitising shortens the text, so a cut measured on
+    # the original would throw away words it did not need to.
+    voice = _state.car_mode_enabled()
+    caption, parse_mode = _state.for_car(format_caption(snap, voice=voice),
+                                         cfg.get("language", "it"))
+    if len(caption) > _TG_CAPTION_MAX:
+        caption = caption[:_TG_CAPTION_MAX - 1] + "…"
+    if snap.picture:
+        await message.reply_photo(photo=snap.picture, caption=caption,
+                                  parse_mode=parse_mode,
+                                  read_timeout=60, write_timeout=60)
+    else:
+        await message.reply_text(caption, parse_mode=parse_mode,
+                                 disable_web_page_preview=True)
+
+
+async def _take_snapshot(kind: str, cfg: dict):
+    now = time.time()
+    manager = _SNAP_KINDS[kind][2]
+    monitor = manager.get(cfg["id"])
+
+    if kind == "storm":
+        # No on-demand fallback exists: the strike buffer only fills while the
+        # subscription is up. A stopped monitor still reports its position, which
+        # is half of what the command is for.
+        from live_monitors.storm_front import StormFrontLiveMonitor
+        monitor = monitor or StormFrontLiveMonitor(cfg, None, _tz_name())
+        return await monitor.snapshot(now)
+
+    from live_monitors.radar import PRODUCT_RAIN, fetch_latest, radar_feed
+    from live_monitors.rain_front import RainFrontLiveMonitor
+    if monitor is not None and radar_feed.latest(PRODUCT_RAIN) is not None:
+        return await monitor.snapshot(now)
+    # Not running, or running but the shared feed has not delivered yet: fetch one
+    # image on demand, so the command is useful precisely while you are setting a
+    # monitor up. Constructing a monitor is side-effect free — the feed is only
+    # acquired in start(), which is not called.
+    grid, _lag = await fetch_latest(PRODUCT_RAIN)
+    monitor = monitor or RainFrontLiveMonitor(cfg, None, _tz_name())
+    return await monitor.snapshot(now, grid=grid)
+
+
+def _tz_name() -> str:
+    return _state.read_settings().get("timezone", "UTC") or "UTC"
+
+
+# ── /stations — what the ground stations are measuring ────────────────────────
+#
+# The only thing in JARVIS that reports MEASURED weather on demand. No LLM, so
+# no tokens: same class of command as /rain and /storm, and like them it reads
+# and decides nothing.
+#
+# The radius is a MeteoHub setting rather than an argument to the command,
+# because the right value is a property of where you are — Bologna has a full
+# weather station at 1 km while Bari needs 55 for a barometer — and a number you
+# have to remember is a number nobody tunes.
+
+async def _geocode_for_stations(place: str) -> tuple[float, float, str]:
+    """Resolve a place, preferring Italy — because that is where the data is.
+
+    `geocode` picks the most POPULOUS match across the whole world, which is
+    right for a forecast and wrong here: "Bari" resolves to Barinas, Venezuela,
+    whose 350 000 inhabitants outnumber Bari's, and MeteoHub has no station
+    within four thousand kilometres of it. The shared helper is left alone —
+    every monitor and the weather tool depend on its behaviour — and the country
+    is hinted here, which it already supports through "Place, IT".
+
+    A query that names its own country is passed through untouched, and one that
+    genuinely is not in Italy falls back to the plain lookup so the readout can
+    say there are no stations there rather than pretend it misunderstood.
+    """
+    if "," in place:
+        return await geocode(place)
+    try:
+        return await geocode(f"{place}, IT")
+    except ValueError:
+        return await geocode(place)
+
+
+def _stations_keyboard(positions: list[dict]) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton(p.get("name") or p["id"],
+                              callback_data=f"stations:{p['id']}")]
+        for p in positions])
+
+
+async def stations_text(lat: float, lon: float, place: str, lang: str = "it",
+                        voice: bool = False) -> str:
+    """The /stations readout as Telegram HTML. Raises when MeteoHub cannot be
+    read. Shared with the voice tool `station_readings` (bot/control.py)."""
+    now = time.time()
+    radius = gauge_source.radius_km()
+    view = await gauge_source.observe(
+        lat, lon, radius, min_mmh=0.2, products=READOUT_PRODUCTS,
+        window_min=gauge_source.READOUT_WINDOW_MIN, now=now)
+    return format_stations(view, place, lang=lang, tz=_tz(_tz_name()),
+                           radius_km=radius, now=now, voice=voice)
+
+
+async def _deliver_stations(message, lat: float, lon: float, place: str,
+                            lang: str = "it") -> None:
+    """One readout, from whichever route found the coordinates.
+
+    Takes `message` rather than `update` so the command and the inline button
+    share it, exactly as `_deliver_snapshot` does.
+    """
+    try:
+        text = await stations_text(lat, lon, place, lang)
+    except Exception as e:
+        await message.reply_text(f"❌ MeteoHub read failed: {html.escape(str(e))}")
+        return
+    # Car Mode keeps this one whole: the readout IS the content, and it was
+    # asked for deliberately. `for_car` still turns units and compass points
+    # into words and drops the icons.
+    text, parse_mode = _state.for_car(text, lang)
+    await message.reply_text(text, parse_mode=parse_mode,
+                             disable_web_page_preview=True)
+
+
+async def cmd_stations(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != _state.ALLOWED_CHAT_ID:
+        return
+    if not gauge_source.is_enabled():
+        await update.message.reply_text(
+            "MeteoHub is switched off. Turn it on under Settings → MeteoHub "
+            "in the Web UI.")
+        return
+
+    place = " ".join(context.args or []).strip()
+    if place:
+        try:
+            lat, lon, resolved = await _geocode_for_stations(place)
+        except ValueError:
+            await update.message.reply_text(
+                f"Location not found: “{html.escape(place)}”.")
+            return
+        except Exception as e:
+            await update.message.reply_text(
+                f"❌ Geocoding failed: {html.escape(str(e))}")
+            return
+        await _deliver_stations(update.message, lat, lon, resolved)
+        return
+
+    # No argument: the live position. Same 0 / 1 / N ladder as /rain.
+    positions = load_positions()
+    if not positions:
+        await update.message.reply_text(
+            "No position configured, and no place given. Try “/stations Napoli”, "
+            "or add a position under Settings → Position in the Web UI.")
+        return
+    if len(positions) == 1:
+        await _stations_at_position(update.message, positions[0])
+        return
+    await update.message.reply_text("Which position?",
+                                    reply_markup=_stations_keyboard(positions))
+
+
+async def _stations_at_position(message, position: dict) -> None:
+    """Resolve one configured position, or say why it cannot be resolved.
+
+    A position with no fix is reported as such rather than silently replaced by
+    somewhere else — the readout names a place, and naming the wrong one is the
+    failure this refuses.
+    """
+    name = position.get("name") or position["id"]
+    resolved = position_manager.resolve(position["id"], time.time())
+    if resolved is None:
+        await message.reply_text(
+            f"No usable fix from “{html.escape(name)}” yet. "
+            f"Give a place instead: “/stations Napoli”.")
+        return
+    state, _grade = resolved
+    await _deliver_stations(message, state.lat, state.lon, name)
+
+
+async def handle_stations_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    if query.from_user.id != _state.ALLOWED_CHAT_ID:
+        await query.answer()
+        return
+    parts = query.data.split(":", 1)
+    await query.answer()
+    if len(parts) < 2:
+        return
+    position = next((p for p in load_positions() if p.get("id") == parts[1]), None)
+    if position is None:
+        await query.message.reply_text("❌ Position not found.")
+        return
+    await _stations_at_position(query.message, position)
+
+
+# ── /car ──────────────────────────────────────────────────────────────────────
+
+async def cmd_car(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Turn Car Mode on or off. No argument toggles; `on`/`off` are explicit.
+
+    A toggle is the right default because this command is used at the two moments
+    you know exactly what you want — getting in and getting out — and typing one
+    word is easier than remembering which state you left it in. The explicit
+    forms exist so a dictated "car off" cannot flip it back on by accident.
+    """
+    if update.effective_user.id != _state.ALLOWED_CHAT_ID:
+        return
+
+    arg = context.args[0].lower() if context.args else ""
+    if arg in ("on", "off"):
+        enabled = set_car_mode(arg == "on")
+    elif arg:
+        await update.message.reply_text("Usage: /car [on|off]")
+        return
+    else:
+        enabled = set_car_mode(not _state.read_settings().get("car_mode_enabled", False))
+
+    # Deliberately free of the markup and icons the rest of this file uses: this
+    # is the one reply guaranteed to be read while Car Mode is on.
+    msg = ("Car Mode on. Alerts will arrive as plain spoken text, "
+           "without icons, links or charts."
+           if enabled else
+           "Car Mode off. Alerts return to the full format, charts included.")
+    await update.message.reply_text(msg)
+
+
+# ── /manage ───────────────────────────────────────────────────────────────────
+
+def _build_manage_keyboard() -> tuple[str, InlineKeyboardMarkup]:
+    tasks    = load_tasks()
+    monitors = load_monitors()
+    live     = load_live_monitors()
+    ha       = load_ha_monitors()
+    keyboard = []
+    if tasks:
+        keyboard.append([InlineKeyboardButton("── 📋 Tasks ──", callback_data="mgmt:noop")])
+        for t in _by_name(tasks):
+            badge = "✅" if t.get("enabled") else "⏸"
+            keyboard.append([InlineKeyboardButton(f"{badge} {t['name']}", callback_data=f"mgmt:task:{t['id']}")])
+    if monitors:
+        keyboard.append([InlineKeyboardButton("── 🌩 Monitors ──", callback_data="mgmt:noop")])
+        for m in _by_name(monitors):
+            badge = "✅" if m.get("enabled") else "⏸"
+            keyboard.append([InlineKeyboardButton(f"{badge} {m['name']} ({_monitor_detail(m)})", callback_data=f"mgmt:monitor:{m['id']}")])
+    if live:
+        keyboard.append([InlineKeyboardButton("── ⚡ Live ──", callback_data="mgmt:noop")])
+        for m in _by_name(live):
+            badge = "✅" if m.get("enabled") else "⏸"
+            keyboard.append([InlineKeyboardButton(f"{badge} {m['name']} ({_live_monitor_detail(m)})", callback_data=f"mgmt:live:{m['id']}")])
+    if ha:
+        keyboard.append([InlineKeyboardButton("── 🏠 HA ──", callback_data="mgmt:noop")])
+        for m in _by_name(ha):
+            badge = "✅" if m.get("enabled") else "⏸"
+            keyboard.append([InlineKeyboardButton(f"{badge} {m['name']}", callback_data=f"mgmt:ha:{m['id']}")])
+    total = len(tasks) + len(monitors) + len(live) + len(ha)
+    text  = f"🔧 <b>Manage</b> — {total} component{'s' if total != 1 else ''}\nTap to toggle enable/disable:"
+    return text, InlineKeyboardMarkup(keyboard)
+
+
+async def cmd_manage(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != _state.ALLOWED_CHAT_ID:
+        return
+    if not any([load_tasks(), load_monitors(), load_live_monitors(), load_ha_monitors()]):
+        await update.message.reply_text("No components configured. Add them from the Web UI.")
+        return
+    text, markup = _build_manage_keyboard()
+    await update.message.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=markup)
+
+
+async def handle_mgmt_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    if query.from_user.id != _state.ALLOWED_CHAT_ID:
+        await query.answer()
+        return
+    parts = query.data.split(":", 2)
+    if len(parts) < 3 or parts[1] == "noop":
+        await query.answer()
+        return
+    _, kind, item_id = parts
+    toggle_fn = {
+        "task":    toggle_task,
+        "monitor": toggle_monitor,
+        "live":    toggle_live_monitor,
+        "ha":      toggle_ha_monitor,
+    }.get(kind)
+    if not toggle_fn:
+        await query.answer()
+        return
+    new_state = toggle_fn(item_id)
+    if new_state is None:
+        await query.answer("❌ Not found.")
+        return
+    await query.answer("✅ Enabled" if new_state else "⏸ Disabled")
+    text, markup = _build_manage_keyboard()
+    try:
+        await query.edit_message_text(text, parse_mode=ParseMode.HTML, reply_markup=markup)
+    except Exception:
+        pass

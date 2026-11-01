@@ -1,0 +1,222 @@
+# Troubleshooting
+
+## JARVIS doesn't respond to Telegram messages
+
+1. Check that `telegram_bot_token` and `telegram_allowed_chat_id` are set correctly in the Configuration tab.
+2. Confirm the Telegram user ID is the one configured (send a message to [@userinfobot](https://t.me/userinfobot) to check).
+3. Check the add-on log (HA → Add-ons → JARVIS → Log) for startup errors.
+4. Confirm the add-on is running (green "Running" indicator in HA).
+
+---
+
+## "Model error" or empty replies
+
+1. Verify the LLM provider API key is correct and has credits.
+2. Try the **⚡ speed test** in the Web UI to check which models respond correctly.
+3. Configure a **Fallback Provider / Fallback Model** — JARVIS will retry automatically on failure.
+4. Check the add-on log for the error message from the provider.
+
+---
+
+## A task fails on the token limit — but only sometimes
+
+Symptom: the same scheduled task, on the same page, is refused by Groq roughly every other run.
+
+The 8K figure on the Groq free tier is **tokens per minute**, not the size of one request: a rolling 60-second budget counting every call a turn makes, prompt and completion together. A turn re-sends the whole conversation on each tool round, so the cost is cumulative, and one extra round can double it.
+
+What to check in the logs — each round now prints its own line:
+
+```
+[JARVIS] round=0 prompt=980 completion=48 cumulative=1028 tpm_used=1028
+[JARVIS] round=1 prompt=3540 completion=402 cumulative=4970 tpm_used=4970
+```
+
+- **A third and fourth round appearing on the failing runs but not the good ones** — the model is calling tools it does not need. Lower **Settings → JARVIS → Max tool rounds**, and check **Sampling temperature** is low: at the provider default the same prompt costs a different number of rounds every time.
+- **`read_url` in `tools_used` twice** — the fetch failed and the model retried. You should also see a `⚠️` notice naming the HTTP status; if Jina is rate-limiting you often, that is the thing to fix.
+- **A single round already near the ceiling** — the page is large. Lower **Max completion tokens**, or point the task's model at a provider with a roomier budget.
+- **`pacing groq: waiting …`** — the runtime is holding a request back so it fits the minute. Expected on heavy tasks; latency, not an error.
+- **"primary and fallback both failed"** right after a rate limit — the fallback shares the API key's budget. JARVIS now waits out the provider's retry hint before trying it, but a fallback on a *different* provider avoids the problem entirely.
+
+## Cron jobs (tasks / monitors) fire at the wrong time
+
+- Check the **Timezone** setting in **Settings → JARVIS**. All cron expressions are interpreted in the configured timezone.
+- Use the live cron validator in the task/monitor form — it shows the next fire time in the configured timezone.
+- APScheduler weekday convention: **0 = Monday … 6 = Sunday** (not Unix convention where 0 = Sunday).
+
+---
+
+## Monitor runs but no Telegram message is received
+
+- Confirm the monitor is **Enabled** (green dot in sidebar).
+- For rain monitors: no message is sent when no rain is expected. This is intentional.
+- Check the add-on log for any HTTP or send errors.
+- Use **▶ Test Monitor** to trigger an immediate run and see if the report arrives.
+
+---
+
+## The same live-monitor alert arrived twice
+
+Fixed in 4.4.2. Both copies were composed by the same monitor at two consecutive polls: the first send had in fact been delivered, but Telegram's answer never came back before the timeout, so the alert was recorded as undelivered and sent again a minute or two later.
+
+**How to tell a retry from anything else, from the messages alone.** Compare the `⏱️` line of the two copies:
+
+| What you see | What it means |
+|---|---|
+| `⏱️ Da 19 a 11 km in 14 min` in one, `… in 16 min` in the other | A retry. That figure counts from the last *confirmed* delivery, so a larger value in the second copy proves the first was never recorded as sent. |
+| The identical `⏱️` value in both | Two separate monitors, each keeping its own books. Check the monitor list for a duplicate watching the same position. |
+
+The same `📡 Radar delle 21:35` in both copies tells you only that no new image had arrived between them — every image is used for about five minutes, so it proves nothing either way.
+
+In the log a retry looked like this:
+
+```
+[JARVIS] send_photo(bot_id='default') TimedOut after 60.1s: Timed out
+[RainFront] 'Casa' alert NOT delivered — state held, retry next poll
+```
+
+Since 4.4.2 a timeout logs `delivery UNCONFIRMED — committed anyway` instead and no second message is sent. The `NOT delivered … retry next poll` line now appears only when the send genuinely failed — a rejected message, a blocked bot, an unreachable network — where retrying is the right answer.
+
+---
+
+## Live monitor shows 🔴 Stopped
+
+- Check the add-on log for MQTT connection errors.
+- Verify the MQTT broker is running (Mosquitto add-on in HA).
+- For the Storm front monitor: verify the geohash topics are being published by the upstream data source.
+- Try disabling and re-enabling the monitor to force a reconnect.
+
+---
+
+## What a live monitor's badge means
+
+Five states, and only two of them are a problem.
+
+| Badge | Meaning | Is something wrong? |
+|-------|---------|---------------------|
+| 🟢 **Running** | Connected, data arriving. | No |
+| 🟢 **Quiet** | Connected and healthy, nothing to send. Storm fronts only. | **No** |
+| 🟠 **Degraded** | The feed is failing: connection down, or no usable radar image. | Yes |
+| 🟠 **Blind** | Running, but it knows it cannot see and has gone deliberately silent. **No alerts, and no all-clear either.** | Yes |
+| 🔴 **Stopped** | Disabled, or not started. | Only if you did not disable it |
+
+### 🟢 Quiet is not a fault
+
+A storm front subscribes to a ring of geohash cells about 110 km across. Outside a storm **nothing at all is published from them**, so the feed is legitimately silent for hours. Until v4.8.2 that silence was badged 🟠 Degraded, so a perfectly healthy monitor was amber for most of the year — and it buried the real failures. Nothing to do here.
+
+A rain front never reports Quiet: the radar publishes on a timer whatever the weather, so a silent radar feed is always a fault.
+
+### 🟠 Degraded
+
+- Check the log for repeated `disconnected: … retry in 15s` lines with a rising `failures=` count.
+- The Blitzortung broker (`blitzortung.ha.sed.pl:1883`) is a public service; an outage there shows up exactly this way.
+- For a rain front, it means the radar is not answering or the last image is past 25 minutes old — the source publishes every 5 minutes with about 10 minutes of natural lag, so anything under 25 minutes is normal.
+- Try disabling and re-enabling the monitor to force a reconnect.
+
+### 🟠 Blind
+
+The monitor is alive and has stopped speaking on purpose, because it does not trust what it can see. **Its silence carries no information** — it is not telling you the sky is clear. The card in `/monitors` names the cause:
+
+- *non sa da dove misurare* — it follows a position that has never reported and has no fallback coordinates, or the position was deleted. Check **Settings → Positions**.
+- *nessuna immagine radar recente* — same cause as Degraded above, seen from the monitor's side.
+- *il radar non copre l'area sorvegliata* — the watched disc falls outside the radar network's coverage. Reduce the radius, or move the location.
+
+---
+
+## Storm front monitor says too much, too little, or the wrong thing
+
+**Too many messages** is no longer possible: a ring is announced at most once per event, so a storm can produce at most `ring_count` messages plus one all-clear, whatever it does. If you are seeing more than that, you are seeing *separate events* — check the log for the all-clear between them.
+
+**Too few messages.** Read the per-poll diagnostic line:
+
+```
+[StormFront] name | ring=2/4 notified=2 front=18.3km sec=10 act=3 n=22 evt=ACTIVE pend=-/0
+```
+
+- `front` is how close the leading edge of the nearest cell really is, `act` how many sectors are active, `n` how many strikes are inside the radius.
+- A sector needs **4 strikes in 10 minutes** to count at all, and the front is never placed nearer than the 3rd-nearest strike of its sector. Isolated discharges are deliberately invisible.
+- If `evt=IDLE` while you can see lightning, the activity is outside your radius — the monitor observes to 1.6 × the radius but only alerts inside it.
+
+**It said "track not yet determinable".** That is the honest answer, not a bug. Far out, geometry makes every storm look head-on, and a bearing derived from a handful of discharges jitters by several degrees. The monitor declares the ambiguity rather than guessing, and the next ring usually settles it.
+
+**It said "ti sfiora" and then it hit me.** Report this — it is the error the design works hardest to avoid, and it did not occur once in 100 simulated head-on storms. Include the log lines for the whole event.
+
+**No radar image.** The chart is rendered on a worker thread and any failure degrades to text-only, by design. Look for `chart failed (…) — sending text only` in the log.
+
+---
+
+## A reply looks right but the data behind it is missing
+
+A tool that fails no longer does so silently. **Settings → JARVIS → Report tool failures** (on by default) sends a `⚠️` message ahead of the reply naming what broke:
+
+```
+⚠️ Task Rassegna stampa: tool failure — the answer below may be incomplete.
+• read_url: HTTP 429 from r.jina.ai reading https://example.com/article
+• get_emails: Gmail not authenticated. Send /gmailauth to connect.
+```
+
+If you get an answer with no such warning, the tools did run. If you switched the setting off, you are back to being unable to tell a good run from a fabricated one — which is why it defaults to on.
+
+## Google Calendar / Gmail / Tasks OAuth
+
+**"Authorization failed" on token fetch:**
+- The redirect URL must be received within 5 minutes of sending `/gcalauth`.
+- If the automatic redirect fails, copy the full URL from your browser and send it manually as `/gcalauth <url>`.
+
+**Token expired / revoked (happens every 7 days if app is in Testing mode):**
+- Go to [Google Cloud Console → APIs & Services → OAuth consent screen → Publishing status → Publish app](https://console.cloud.google.com).
+- This makes the token permanent. No Google review required for personal use.
+- After publishing, run `/gcalauth` (or `/gmailauth`, `/gtasksauth`) again to get a fresh permanent token.
+
+**"Not authenticated" even after `/gcalauth`:**
+- Check if the token file exists: `/data/google_calendar_token.json`.
+- Verify `google_client_id` and `google_client_secret` in the Configuration tab are the correct values from Google Cloud Console.
+
+---
+
+## HA Monitor never triggers
+
+1. Check that `mqtt_discoverystream_alt` is installed and configured with `publish_retain: true`.
+2. Use **🔍 Discover** in the HA Monitor form — if no entities appear, the statestream is not publishing. Trigger a state change in HA and try again.
+3. Verify the **Statestream prefix** matches `base_topic` in your `mqtt_discoverystream_alt` configuration.
+4. Check the **State filter** field — if set, only the listed states trigger an alert.
+5. Check the **Cooldown** setting — the same entity won't alert again until the cooldown expires.
+
+---
+
+## HA Monitor triggers spuriously on startup
+
+This is the "retained message" behaviour: on MQTT connect the broker replays the last known state. JARVIS v2.15.8+ handles this correctly — it silently records the first retained state and only alerts on subsequent changes. If you're still seeing false alerts, check if there's an older version running.
+
+---
+
+## HA Assist
+
+**JARVIS does not appear in *Add integration*.** Restart Home Assistant after the add-on has copied the integration (Telegram tells you when). Check that the add-on was **updated**, not rebuilt: the config-folder permission arrives with the update. The log says `[JARVIS] Assist: HA integration installed`.
+
+**"JARVIS non risponde" / cannot connect when adding it.** Use the URL and token from **Settings → 🎙️ HA Assist → Show URL and token** (`http://local-jarvis:8099` for a local add-on). The panel's *Status* shows the last request JARVIS received.
+
+**The speaker test says nothing.** The test uses the speaker selected in the panel: pick one (🔄 reloads from HA). A `media_player.*` also needs a **TTS engine**. The log line `[JARVIS] Speaker: …` gives HA's answer; a `401/403` on `supervisor/core/api` means the add-on was rebuilt instead of updated.
+
+**A radar or stations question went to the model.** Direct commands need their words (*rain, storm, radar…, sta per piovere, misure/stazioni/sensori*); "com'è la situazione dei temporali?" has none, so the model answers (with `radar_now`). The Telegram copy's footer tells which: `🔧 radar_now (direct)` vs a token count.
+
+**A word is read out as a symbol.** Tell us which: `voice.py` is where speech-only fixes go.
+
+## Web UI not loading
+
+- Open the add-on in HA and click **Open Web UI** — this uses the correct HA Ingress URL.
+- Do not access the Web UI directly via the add-on port from outside HA (the API paths are ingress-relative).
+- If the page loads but settings don't save, check the add-on log for FastAPI errors.
+
+---
+
+## Logs
+
+View the add-on log in **Home Assistant → Settings → Add-ons → JARVIS → Log**. Key log patterns:
+
+| Log prefix | Meaning |
+|------------|---------|
+| `[JARVIS]` | General agent activity |
+| `[StormFront]` | Storm front ring, front distance and event state, one line per poll |
+| `[Monitor]` | Scheduled monitor execution |
+| `WARNING` | Non-fatal issue (MQTT disconnect, etc.) |
+| `ERROR` | Requires attention |

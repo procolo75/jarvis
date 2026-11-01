@@ -1,0 +1,12 @@
+{
+  "domain": "jarvis",
+  "name": "JARVIS",
+  "codeowners": ["@procolo75"],
+  "config_flow": true,
+  "dependencies": ["conversation"],
+  "documentation": "https://github.com/procolo75/jarvis/wiki",
+  "integration_type": "service",
+  "iot_class": "local_push",
+  "requirements": [],
+  "version": "1.0.1"
+}

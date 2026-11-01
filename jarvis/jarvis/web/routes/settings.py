@@ -1,0 +1,89 @@
+"""
+web/routes/settings.py
+───────────────────────
+Routes: configuration, settings CRUD, timezone.
+"""
+
+from fastapi import APIRouter, HTTPException
+from fastapi.responses import HTMLResponse
+from pathlib import Path
+
+from apscheduler.triggers.cron import CronTrigger
+
+from live_monitors.position import position_manager
+from live_monitors import gauges as gauge_source
+from web.store import (
+    PROVIDERS,
+    load_positions,
+    _get_provider_api_key,
+    _get_configured_tz,
+    load_settings,
+    save_settings,
+)
+from web.models import SettingsPayload
+
+router = APIRouter()
+
+HTML_FILE = Path(__file__).parent.parent / "index.html"
+
+
+@router.get("/", response_class=HTMLResponse)
+async def index():
+    return HTML_FILE.read_text(encoding="utf-8")
+
+
+@router.get("/api/config")
+async def get_config():
+    import bot.state as _state
+    return {
+        "providers":    PROVIDERS,
+        "default_chat_id": _state.ALLOWED_CHAT_ID,
+    }
+
+
+@router.get("/api/settings")
+async def get_settings():
+    return load_settings()
+
+
+@router.put("/api/settings")
+async def update_settings(payload: SettingsPayload):
+    data = payload.model_dump()
+    if data.get("voice_enabled"):
+        groq_key = _get_provider_api_key("groq")
+        if not groq_key:
+            raise HTTPException(
+                status_code=400,
+                detail="Groq API key is required to enable the Voice agent. Set groq_api_key in the add-on Configuration tab.",
+            )
+    tz = data.get("timezone", "UTC") or "UTC"
+    try:
+        CronTrigger.from_crontab("0 0 * * *", timezone=tz)
+    except Exception:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid timezone: '{tz}'. Use an IANA name such as 'Europe/Rome' or 'UTC'.",
+        )
+    save_settings(data)
+    # Broker credentials live here, and the position manager connects with them,
+    # so a settings save must re-aim it. `configure` returns early when nothing it
+    # depends on changed, so an unrelated save does not disturb a live fix history.
+    try:
+        position_manager.configure(data, load_positions())
+    except Exception as e:
+        print(f"[JARVIS] position manager reconfigure failed: {e}")
+    # Same reason, and it was missed in v4.10.0: the MeteoHub switch and its
+    # knobs live in these settings, and `configure` was reached only from
+    # `reload_live_monitors()`. So switching the source on from its own panel
+    # and saving did nothing at all until some live monitor was saved or the
+    # add-on restarted — a control that appears to work and does not.
+    try:
+        gauge_source.configure(data)
+    except Exception as e:
+        print(f"[JARVIS] gauge source reconfigure failed: {e}")
+    return data
+
+
+@router.get("/api/server-timezone")
+async def get_server_timezone():
+    return {"tz": _get_configured_tz()}

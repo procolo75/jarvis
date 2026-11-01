@@ -1,0 +1,251 @@
+import asyncio
+from pathlib import Path
+
+from core import ToolError
+
+GTASKS_TOKEN_FILE   = Path("/data/google_tasks_token.json")
+GTASKS_SCOPES       = ["https://www.googleapis.com/auth/tasks"]
+GTASKS_REDIRECT_URI = "http://localhost:8099/gtasksauth/callback"
+
+
+async def _notify_token_expired():
+    try:
+        import bot.state as _state
+        await _state._send_error_telegram(
+            "🔑 <b>Google Tasks token scaduto o revocato.</b>\n"
+            "Invia <code>/gtasksauth</code> per riconnetterti."
+        )
+    except Exception as ex:
+        print(f"[JARVIS] Could not send token-expired notification: {ex}")
+
+
+def _build_gtasks_flow(client_id: str, client_secret: str):
+    from google_auth_oauthlib.flow import Flow
+    client_config = {
+        "installed": {
+            "client_id":     client_id,
+            "client_secret": client_secret,
+            "auth_uri":      "https://accounts.google.com/o/oauth2/auth",
+            "token_uri":     "https://oauth2.googleapis.com/token",
+            "redirect_uris": [GTASKS_REDIRECT_URI],
+        }
+    }
+    return Flow.from_client_config(client_config, scopes=GTASKS_SCOPES, redirect_uri=GTASKS_REDIRECT_URI)
+
+
+def _get_gtasks_creds():
+    from google.oauth2.credentials import Credentials
+    from google.auth.transport.requests import Request as GoogleRequest
+    from google.auth.exceptions import RefreshError
+    if not GTASKS_TOKEN_FILE.exists():
+        return None
+    creds = Credentials.from_authorized_user_file(str(GTASKS_TOKEN_FILE), GTASKS_SCOPES)
+    if creds.expired and creds.refresh_token:
+        try:
+            creds.refresh(GoogleRequest())
+            GTASKS_TOKEN_FILE.write_text(creds.to_json())
+        except RefreshError as e:
+            print(f"[JARVIS] Google Tasks token refresh failed ({e}), deleting token file.")
+            GTASKS_TOKEN_FILE.unlink(missing_ok=True)
+            import asyncio as _aio
+            try:
+                loop = _aio.get_event_loop()
+                if loop.is_running():
+                    loop.create_task(_notify_token_expired())
+            except Exception:
+                pass
+            return None
+    return creds
+
+
+def _resolve_task_list_id(service, name_or_id: str) -> str:
+    """Resolve a task list name to its ID; returns name_or_id unchanged if it already is an ID."""
+    if name_or_id == "@default":
+        return name_or_id
+    lists = service.tasklists().list(maxResults=20).execute().get("items", [])
+    # exact ID match
+    for lst in lists:
+        if lst.get("id") == name_or_id:
+            return name_or_id
+    # case-insensitive title match
+    lower = name_or_id.lower()
+    for lst in lists:
+        if lst.get("title", "").lower() == lower:
+            return lst["id"]
+    return name_or_id  # fall back and let the API surface the error
+
+
+def _sync_list_tasks(task_list: str) -> str:
+    from googleapiclient.discovery import build as gtasks_build
+    creds = _get_gtasks_creds()
+    if not creds:
+        return "NOT_AUTHENTICATED"
+    service = gtasks_build("tasks", "v1", credentials=creds)
+    task_list = _resolve_task_list_id(service, task_list)
+    result  = service.tasks().list(
+        tasklist=task_list,
+        showCompleted=False,
+        showHidden=False,
+        maxResults=50,
+    ).execute()
+    tasks = result.get("items", [])
+    if not tasks:
+        return "No open tasks."
+    lines = []
+    for t in tasks:
+        due   = f" (due: {t['due'][:10]})" if t.get("due") else ""
+        notes = f" — {t['notes']}" if t.get("notes") else ""
+        lines.append(f"- [{t['id']}] {t.get('title', '(no title)')}{due}{notes}")
+    return "\n".join(lines)
+
+
+def _sync_create_task(task_list: str, title: str, notes: str, due: str) -> str:
+    from googleapiclient.discovery import build as gtasks_build
+    creds = _get_gtasks_creds()
+    if not creds:
+        return "NOT_AUTHENTICATED"
+    service = gtasks_build("tasks", "v1", credentials=creds)
+    task_list = _resolve_task_list_id(service, task_list)
+    body = {"title": title}
+    if notes:
+        body["notes"] = notes
+    if due:
+        if len(due) == 10:
+            due = due + "T00:00:00.000Z"
+        body["due"] = due
+    result = service.tasks().insert(tasklist=task_list, body=body).execute()
+    return f"Task created: {result.get('title', title)} (id: {result.get('id', '?')})"
+
+
+def _sync_complete_task(task_list: str, task_id: str) -> str:
+    from googleapiclient.discovery import build as gtasks_build
+    creds = _get_gtasks_creds()
+    if not creds:
+        return "NOT_AUTHENTICATED"
+    service = gtasks_build("tasks", "v1", credentials=creds)
+    task_list = _resolve_task_list_id(service, task_list)
+    task    = service.tasks().get(tasklist=task_list, task=task_id).execute()
+    service.tasks().patch(
+        tasklist=task_list, task=task_id, body={"status": "completed"}
+    ).execute()
+    return f"Task '{task.get('title', task_id)}' marked as completed."
+
+
+def _sync_delete_task(task_list: str, task_id: str) -> str:
+    from googleapiclient.discovery import build as gtasks_build
+    creds = _get_gtasks_creds()
+    if not creds:
+        return "NOT_AUTHENTICATED"
+    service = gtasks_build("tasks", "v1", credentials=creds)
+    task_list = _resolve_task_list_id(service, task_list)
+    task    = service.tasks().get(tasklist=task_list, task=task_id).execute()
+    service.tasks().delete(tasklist=task_list, task=task_id).execute()
+    return f"Task '{task.get('title', task_id)}' deleted."
+
+
+def _sync_update_task(task_list: str, task_id: str, title: str, notes: str) -> str:
+    from googleapiclient.discovery import build as gtasks_build
+    creds = _get_gtasks_creds()
+    if not creds:
+        return "NOT_AUTHENTICATED"
+    service = gtasks_build("tasks", "v1", credentials=creds)
+    task_list = _resolve_task_list_id(service, task_list)
+    body = {}
+    if title:
+        body["title"] = title
+    if notes:
+        body["notes"] = notes
+    if not body:
+        return "Nothing to update."
+    service.tasks().patch(tasklist=task_list, task=task_id, body=body).execute()
+    return "Task updated."
+
+
+def gtasks_tools(settings: dict) -> list[dict]:
+    """Return the Google Tasks tool specs."""
+
+    async def list_tasks(task_list: str | None = "@default") -> str:
+        """List all open tasks in a Google Tasks list.
+        Call this when the user wants to see, check, or review their tasks, to-do list, or things to do.
+        Trigger phrases: 'cosa ho da fare', 'lista task', 'todo', 'mostrami i task', 'what do I have to do', 'show tasks'."""
+        loop   = asyncio.get_running_loop()
+        result = await loop.run_in_executor(None, _sync_list_tasks, task_list or "@default")
+        if result == "NOT_AUTHENTICATED":
+            raise ToolError("Google Tasks not authenticated. Send /gtasksauth to connect.")
+        return result
+
+    async def create_task(
+        title: str,
+        notes: str | None = "",
+        due: str | None = "",
+        task_list: str | None = "@default",
+    ) -> str:
+        """Create a new task in Google Tasks.
+        Call this when the user wants to add, create, or note down a task or to-do item.
+        Trigger phrases: 'aggiungi', 'crea task', 'aggiungi alla lista', 'add task', 'remember to', 'ricorda di'.
+        The due parameter is optional and must be a date in YYYY-MM-DD format."""
+        loop   = asyncio.get_running_loop()
+        result = await loop.run_in_executor(
+            None, _sync_create_task, task_list or "@default", title, notes or "", due or ""
+        )
+        if result == "NOT_AUTHENTICATED":
+            raise ToolError("Google Tasks not authenticated. Send /gtasksauth to connect.")
+        return result
+
+    async def complete_task(task_id: str, task_list: str | None = "@default") -> str:
+        """Mark a task as completed in Google Tasks.
+        Call this when the user marks a task as done, finished, or completed.
+        Trigger phrases: 'fatto', 'completato', 'segna come fatto', 'done', 'mark complete'.
+        IMPORTANT: first call list_tasks to retrieve the task ID, then call this with that ID."""
+        loop   = asyncio.get_running_loop()
+        result = await loop.run_in_executor(None, _sync_complete_task, task_list or "@default", task_id)
+        if result == "NOT_AUTHENTICATED":
+            raise ToolError("Google Tasks not authenticated. Send /gtasksauth to connect.")
+        return result
+
+    async def delete_task(task_id: str, task_list: str | None = "@default") -> str:
+        """Delete a task from Google Tasks permanently.
+        Call this when the user wants to remove or delete a task (not just complete it).
+        Trigger phrases: 'cancella', 'elimina task', 'rimuovi', 'delete task', 'remove task'.
+        IMPORTANT: first call list_tasks to retrieve the task ID, then call this with that ID."""
+        loop   = asyncio.get_running_loop()
+        result = await loop.run_in_executor(None, _sync_delete_task, task_list or "@default", task_id)
+        if result == "NOT_AUTHENTICATED":
+            raise ToolError("Google Tasks not authenticated. Send /gtasksauth to connect.")
+        return result
+
+    async def update_task(
+        task_id: str,
+        title: str | None = "",
+        notes: str | None = "",
+        task_list: str | None = "@default",
+    ) -> str:
+        """Update the title or notes of an existing task in Google Tasks.
+        Call this when the user wants to rename, edit, or modify a task.
+        Trigger phrases: 'rinomina', 'modifica task', 'cambia il nome', 'update task', 'edit task'.
+        IMPORTANT: first call list_tasks to retrieve the task ID, then call this with that ID."""
+        loop   = asyncio.get_running_loop()
+        result = await loop.run_in_executor(
+            None, _sync_update_task, task_list or "@default", task_id, title or "", notes or ""
+        )
+        if result == "NOT_AUTHENTICATED":
+            raise ToolError("Google Tasks not authenticated. Send /gtasksauth to connect.")
+        return result
+
+    return [
+        {"name": "list_tasks", "fn": list_tasks,
+         "description": "List all open tasks in Google Tasks. Call this when the user wants to see, check or review their tasks or to-do list. Never shows completed tasks.",
+         "parameters": {"type": "object", "properties": {"task_list": {"type": "string", "description": "Task list id, default '@default'."}}, "required": []}},
+        {"name": "create_task", "fn": create_task,
+         "description": "Create a new task in Google Tasks. Call this to add, create or note down a task or to-do item. 'due' is optional, YYYY-MM-DD.",
+         "parameters": {"type": "object", "properties": {"title": {"type": "string"}, "notes": {"type": "string"}, "due": {"type": "string"}, "task_list": {"type": "string"}}, "required": ["title"]}},
+        {"name": "complete_task", "fn": complete_task,
+         "description": "Mark a task as completed. First call list_tasks to retrieve the task ID, then call this with that ID.",
+         "parameters": {"type": "object", "properties": {"task_id": {"type": "string"}, "task_list": {"type": "string"}}, "required": ["task_id"]}},
+        {"name": "delete_task", "fn": delete_task,
+         "description": "Delete a task permanently (not just complete it). First call list_tasks to retrieve the task ID.",
+         "parameters": {"type": "object", "properties": {"task_id": {"type": "string"}, "task_list": {"type": "string"}}, "required": ["task_id"]}},
+        {"name": "update_task", "fn": update_task,
+         "description": "Update the title or notes of an existing task. First call list_tasks to retrieve the task ID.",
+         "parameters": {"type": "object", "properties": {"task_id": {"type": "string"}, "title": {"type": "string"}, "notes": {"type": "string"}, "task_list": {"type": "string"}}, "required": ["task_id"]}},
+    ]

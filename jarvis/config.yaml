@@ -1,0 +1,50 @@
+name: JARVIS for Home Assistant
+description: AI orchestrator agent controlled via Telegram
+version: "5.0.2"
+slug: jarvis
+init: false
+arch:
+  - aarch64
+  - amd64
+  - armhf
+  - armv7
+  - i386
+homeassistant_api: true
+map:
+  - data:rw
+  - type: homeassistant_config
+    read_only: false
+hassio_api: true
+discovery:
+  - jarvis
+ingress: true
+ingress_port: 8099
+panel_icon: mdi:radar
+options:
+  telegram_bot_token: ""
+  telegram_allowed_chat_id: 0
+  openrouter_api_key: ""
+  openai_api_key: ""
+  github_token: ""
+  gemini_api_key: ""
+  groq_api_key: ""
+  cloudflare_account_id: ""
+  cloudflare_api_token: ""
+  tavily_api_key: ""
+  google_client_id: ""
+  google_client_secret: ""
+  rapidapi_football_key: ""
+schema:
+  telegram_bot_token: password
+  telegram_allowed_chat_id: int
+  openrouter_api_key: password
+  openai_api_key: password
+  github_token: password
+  gemini_api_key: password
+  groq_api_key: password
+  cloudflare_account_id: str
+  cloudflare_api_token: password
+  tavily_api_key: password
+  google_client_id: str
+  google_client_secret: password
+  rapidapi_football_key: password

@@ -6,7 +6,9 @@ data/
 *.json
 !repository.yaml
 # Captured reader responses the tests read back — data, not a runtime secret.
-!dradis/tests/fixtures/*.json
+!jarvis/tests/fixtures/*.json
+# The Home Assistant integration cannot load without these.
+!jarvis/ha_integration/**/*.json
 
 # Python
 __pycache__/

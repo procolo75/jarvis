@@ -1,0 +1,345 @@
+# Scheduled Monitors
+
+Scheduled monitors fetch data from external APIs and compute results entirely in Python, then deliver them to your Telegram chat on a cron schedule. **No LLM is invoked by default** — output is deterministic and costs zero tokens. Monitors are stored in `/data/monitors.json`.
+
+## Alert Modes
+
+Each monitor supports two alert modes:
+
+| Mode | Description |
+|------|-------------|
+| **Direct Telegram** (default) | Sends the report immediately without an LLM call. Zero token cost. |
+| **LLM (Call JARVIS)** | Passes the generated report to the full JARVIS agent together with custom instructions. The agent can send Telegram messages, emails, create tasks, etc. Consumes tokens. |
+
+## Creating a Monitor
+
+Click `+` in the **Scheduled Monitors** sidebar header.
+
+| Field | Description |
+|-------|-------------|
+| Name | Display name shown in the sidebar. |
+| Enabled | Green dot in sidebar when active. |
+| Monitor type | **⛈️ Thunderstorm risk**, **🌧️ Rain alert**, **📊 Weather Charts**, **🌍 Seismic report**, **🚨 Civil Protection alert** (Campania, today + tomorrow), or **☁️ Google Drive Backup**. |
+| Response language | 🇮🇹 Italiano (default) or 🇬🇧 English. |
+| Location | City name — resolved to coordinates via Open-Meteo geocoding, keeping the **most populous match**. Add a country when a name is ambiguous: `Springfield, US`, `Napoli, GM`. Live hint shows coordinates as you type. Not used for seismic type (uses area checkboxes instead). |
+| Cron expression | 5-part cron with live validation and next-fire preview. |
+
+---
+
+## ⛈️ Thunderstorm Risk Monitor
+
+Fetches atmospheric instability data from [Open-Meteo](https://open-meteo.com) (free, no API key required) and computes a **Thunderstorm Risk Score (TRS)** for each time band of each forecast day. All computation is in Python — no LLM, zero token cost.
+
+**Additional fields:**
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| Forecast days | 2 | Number of days to fetch (1–7). |
+
+**Variables fetched (hourly):** CAPE, Lifted Index (LI), Convective Inhibition (CIN) — all provided directly by Open-Meteo, no pressure-level variables required.
+
+**Risk formula — multiplicative composite (TRS ∈ 0.0–1.0):**
+
+```
+TRS = CAPE_norm × LI_norm × CIN_norm
+```
+
+The multiplicative structure means that if any single ingredient is absent the score collapses to zero.
+
+| Component | Normalisation | Notes |
+|---|---|---|
+| CAPE_norm | `min(CAPE / cape_sat, 1.0)` | Mediterranean default: 1200 J/kg |
+| LI_norm | `min(max(−LI / li_sat, 0), 1.0)` | LI −3°C = 60%; Mediterranean default sat. 5°C |
+| CIN_norm | `max(1 − \|CIN\| / cin_supp, 0.0)` | Mediterranean default ceiling: 100 J/kg |
+
+**Climate calibration** — the three saturation constants are saved per monitor and auto-populated from the location's country when a location is resolved in the UI:
+
+| Preset | Countries | CAPE sat. | LI sat. | CIN ceiling |
+|--------|-----------|-----------|---------|-------------|
+| Mediterranean | IT ES GR HR PT TR … | 1200 J/kg | 5.0°C | 100 J/kg |
+| Continental | DE AT CH FR PL … | 1500–1800 J/kg | 5.0°C | 110–120 J/kg |
+| Northern Europe | GB IE NO SE FI … | 400–700 J/kg | 3.5–4.0°C | 60–80 J/kg |
+
+**Risk levels:**
+
+| TRS | Level |
+|---|---|
+| 0.0 – 0.2 | 🟢 NEGLIGIBLE |
+| 0.2 – 0.4 | 🟡 LOW |
+| 0.4 – 0.6 | 🟡 MODERATE |
+| 0.6 – 0.8 | 🟠 HIGH |
+| 0.8 – 1.0 | 🔴 VERY HIGH |
+
+The Telegram message shows one line per time band (00–06 / 06–12 / 12–18 / 18–24) with TRS score and risk label. Each day ends with the daily peak risk.
+
+**Example configuration:**
+
+```
+Name:           Daily thunderstorm risk
+Type:           ⛈️ Thunderstorm risk
+Location:       Bacoli
+Forecast days:  2
+Cron:           0 7 * * *
+```
+
+**Example output:**
+```
+⛈️ Thunderstorm Monitor — Bacoli
+📍 40.7967, 14.0735 | Forecast 2 days
+🕐 01/06/2026 07:00 (Europe/Rome)
+
+📅 1 June 2026
+  00–06  🟢 NEGLIGIBLE  0.04
+  06–12  🟢 NEGLIGIBLE  0.08
+  12–18  🟡 LOW  0.24
+  18–24  🟡 MODERATE  0.41
+➤ Peak risk: 🟡 MODERATE  (0.41)
+```
+
+---
+
+## 🌧️ Rain Alert Monitor
+
+Fetches 15-minute precipitation data from [Open-Meteo](https://open-meteo.com) for the next 24 hours and checks whether rain is forecast within the configured time window. **Silent when skies are clear** — no Telegram message is sent if no rain is expected.
+
+**Additional fields:**
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| Hours ahead | 2 | How many hours ahead to check for rain (1–24). |
+
+**Example configuration:**
+
+```
+Name:        Hourly rain check
+Type:        🌧️ Rain alert
+Location:    Bacoli
+Hours ahead: 2
+Cron:        0 * * * *
+```
+
+---
+
+## 📊 Weather Charts Monitor
+
+Fetches hourly forecasts from [Open-Meteo](https://open-meteo.com) (free, no API key required) for up to 10 NWP models and sends **one PNG chart per selected variable** as separate Telegram photos. No LLM used.
+
+**Supported models:**
+
+The list is the one [meteo-benchmark](https://github.com/procolo75/meteo-benchmark) verifies against Italian METARs. The horizons are Open-Meteo's; the chart itself is capped at 7 days.
+
+| Model | Coverage | Horizon | Notes |
+|-------|----------|---------|-------|
+| ECMWF IFS 0.25° | Global | 15 days | ~25 km grid; no UV index |
+| ECMWF IFS 9km | Global | 15 days | Full resolution; no 500 hPa geopotential, no 850 hPa temperature, no UV index |
+| ECMWF AIFS | Global | 15 days | ECMWF machine-learning model, 0.25°; no wind gusts, precipitation probability or UV index |
+| DWD ICON | Global | 7 days | Seamless ICON-D2 / ICON-EU / ICON global; no UV index |
+| ItaliaMeteo ICON-2I | Italy | ~3 days | 2 km; no precipitation probability, no UV index |
+| NOAA GFS | Global | 16 days | Seamless GFS; supports all variables |
+| NOAA AIGFS | Global | 16 days | NOAA machine-learning model, 0.25°; no wind gusts, humidity, apparent temperature, precipitation probability or UV index |
+| Météo-France | Global | ~4 days | Seamless AROME / ARPEGE; no precipitation probability, no UV index |
+| UK Met Office | Global | 7 days | Seamless UKMO; no UV index |
+| GEM Canada | Global | 10 days | Seamless GEM; no UV index |
+
+**Supported variables:**
+
+| Variable | Unit | Chart | Notes |
+|----------|------|-------|-------|
+| Temperature 2m | °C | line | All models |
+| Apparent Temperature | °C | line | All models except NOAA AIGFS |
+| Temperature 850 hPa | °C | line | All models except ECMWF IFS 9km |
+| Precipitation | mm | numbers | One lane per model, 3 h totals. Always sent, even at zero |
+| Precipitation Probability | % | numbers | One lane per model. ECMWF IFS, DWD ICON, NOAA GFS, UK Met Office, GEM Canada; always sent |
+| Wind Speed 10m | km/h | numbers | One lane per model |
+| Wind Gusts 10m | km/h | numbers | One lane per model (not ECMWF AIFS, NOAA AIGFS), 3 h peaks |
+| Wind Direction 10m | ° | arrows | One horizontal lane per model, an arrow every 3 h pointing downwind |
+| Humidity 2m | % | line | All models except NOAA AIGFS |
+| Sea Level Pressure | hPa | line | All models |
+| Cloud Cover | % | numbers | One lane per model. Always sent, even at zero |
+| UV Index | — | bars | GFS only; suppressed if all-zero |
+| Geopotential 500 hPa | m | line | All models except ECMWF IFS 9km |
+
+**Additional fields:**
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| Forecast days | 3 | Number of days to plot (1–7), counted from the moment the monitor runs. |
+| Weather models | ECMWF IFS 0.25° | Select one or more models (checkboxes with description). |
+| Variables to plot | Temperature, Precipitation, Wind | Each selected variable generates one chart image. |
+
+**Precipitation, precipitation probability and cloud cover** are always sent even when all values are zero — so a clear forecast reads as "no rain expected" instead of a chart silently disappearing. UV index is suppressed when all-zero (night or overcast periods).
+
+**Time axis.** The x-axis is in the local time of the location, with a bright line at midnight and a fainter one at midday over a dashed 6-hour grid. The series starts at the first 3-hour mark after the run (10:16 → 12:00) and runs `days × 24` hours from there: Open-Meteo answers from 00:00 of the current day, and the hours already past are dropped rather than plotted.
+
+**Lane charts.** Six variables are drawn as lanes — one horizontal row per model, sampled every 3 h, with the model name on the y-axis instead of a legend. Wind direction uses arrows; cloud cover, precipitation, precipitation probability, wind speed and wind gusts print the **bare number** (the unit lives in the chart title), because several models of overlapping semi-transparent bars were illegible. Zeros are dimmed so real values stand out. Precipitation sums its 3 h window and wind gusts take the peak — sampling one hour in three would have thrown the rest away — and a model that does not carry the variable is left out rather than shown as an empty lane.
+
+**Example configuration:**
+
+```
+Name:             Morning Weather Charts
+Type:             📊 Weather Charts (Open-Meteo)
+Location:         Naples
+Forecast days:    3
+Weather models:   ECMWF IFS 0.25° ✅  DWD ICON ✅  NOAA GFS ✅
+Variables:        Temperature 2m ✅  Precipitation ✅  Wind Speed ✅  Wind Gusts ✅
+Cron:             0 7 * * *
+```
+
+---
+
+## 🌍 Seismic Report Monitor
+
+Fetches seismic event data from the [INGV GOSSIP JSON API](https://terremoti.ov.ingv.it/gossip) for one or more volcanic/seismic areas. Sends a statistical Telegram report with the total event count (automatic vs revised) and two histogram distributions (magnitude and depth). No LLM used.
+
+**Additional fields:**
+
+| Field | Description |
+|-------|-------------|
+| Area checkboxes | One or more areas: Campi Flegrei, Vesuvio, Isola di Ischia, Golfo di Napoli. |
+| Time range | From start of day / Last 24 hours / From start of week / Last 7 days / From start of month / Last month / From start of year / Last year. |
+
+The report includes:
+- Total events (automatic / revised)
+- Magnitude histogram (n/a · <0 · 0–0.9 · 1–1.9 · 2–2.9 · 3–3.9 · 4+)
+- Depth histogram (0–1 · 1–2 · 2–3 · … km, with per-bin event count and maximum Md)
+- Event list: up to 80 events, one per line (magnitude icon, local datetime, Md, depth, status)
+
+**Icons:**
+
+| Icon | Meaning |
+|------|---------|
+| ⚠️ | Automatic (preliminary, may be revised) |
+| ✅ | Revised (final, manually reviewed by INGV) |
+
+**Example configuration:**
+
+```
+Name:       Daily seismic — Campi Flegrei
+Type:       🌍 Seismic report
+Areas:      Campi Flegrei
+Time range: Last 24 hours
+Cron:       0 8 * * *
+```
+
+---
+
+## 🚨 Civil Protection Alert Monitor (Campania)
+
+Reports the alert level of all eight alert zones of Regione Campania, from the bulletins issued by the **Centro Funzionale Multirischi di Protezione Civile** — **today's and tomorrow's, always both**. No API key, no LLM.
+
+Both days rather than a choice between them: the question this monitor answers is *is there an alert*, and half an answer to that is worse than none. Tomorrow is also the actionable half — today's window is already running by the time anyone reads the message.
+
+**Why not just read the website.** `centrofunzionale.regione.campania.it` is an Angular single-page app: the HTML it serves is an empty shell and the bulletin is drawn client-side, so `read_url` gets back `Caricamento in corso...` and nothing more. The page's own JavaScript bundle calls a public, unauthenticated REST backend that returns the bulletin already structured, and that is what this monitor reads. Nothing parses HTML, images or PDF.
+
+**If every zone is below the configured level on both days, no message is sent.** A single zone reaching the level on either day is enough to fire, so an orange tomorrow reports even when today is entirely green.
+
+**Alert hours are read, never assumed.** The validity window belongs to the avviso and its hours vary a lot: across the 235 avvisi of 2024–2026 the window starts at eighteen distinct hours — `00:00` in a quarter of them, `14:00` in one in seven, `18:00` in one in twenty. The monitor prints the window the API answers with. On a day with **no** avviso there is no window: the backend answers a computed `14:00 → 14:00` placeholder with every other field null, so only the date is printed — `📅 OGGI (24/08/2026)`.
+
+**A day with no zones listed is not automatically a day with no bulletin.** The region issues an alert bulletin only when there is an alert, so a quiet day comes back with an empty zone list — and the site's own map paints today green for it, while it paints tomorrow grey until the response's `checkAvviso` flag says the region has decided. The report mirrors that map: `🟢 Nessuna allerta su tutte le zone` for a day already declared quiet, `Bollettino non ancora emesso` only for a day still undecided — which is what tomorrow is for most of every morning. The validity window is shown either way.
+
+**Tomorrow is fetched tolerantly, today is not.** If the *tomorrow* endpoint fails, the error is reported inside the message and today's alert still goes out. If the *today* endpoint fails, that is the monitor failing and the scheduler says so.
+
+**Alert levels:**
+
+| Level | Meaning |
+|---|---|
+| 1 | 🟢 Verde — nessuna allerta |
+| 2 | 🟡 Giallo — criticità ordinaria |
+| 3 | 🟠 Arancione — criticità moderata |
+| 4 | 🔴 Rosso — criticità elevata |
+
+**Alert zones:**
+
+| # | Zone |
+|---|---|
+| 1 | Piana campana, Napoli, Isole, Area Vesuviana |
+| 2 | Alto Volturno e Matese |
+| 3 | Penisola sorrentino-amalfitana, Monti di Sarno e Monti Picentini |
+| 4 | Alta Irpinia e Sannio |
+| 5 | Tusciano e Alto Sele |
+| 6 | Piana Sele e Alto Cilento |
+| 7 | Tanagro |
+| 8 | Basso Cilento |
+
+**Configuration:**
+
+| Field | Description |
+|---|---|
+| Alert from level | Minimum level, on either day, that triggers a message (default 🟡 Giallo). |
+| Language | 🇮🇹 Italiano / 🇬🇧 English. |
+| Cron | Suggested `30 14 * * *`, just after the bulletin takes effect and around when tomorrow's is published. |
+
+**Example output:**
+
+```
+🚨 Allerta Protezione Civile — Campania
+🕐 22/08/2026 10:40 (Europe/Rome)
+
+📅 OGGI — dal 21/08/2026 14:00 al 22/08/2026 14:00
+Avviso n. 72 del 2026 · emesso 21/08/2026 11:00
+🟡 GIALLO — Zona 1 · Piana campana, Napoli, Isole, Area Vesuviana
+   ↳ Idrogeologico per temporali
+🟢 Verdi: 4, 6, 7, 8
+
+📅 DOMANI — dal 22/08/2026 14:00 al 23/08/2026 14:00
+Bollettino non ancora emesso.
+```
+
+A quiet day, from a monitor set to 🟢 Sempre — no avviso, so no window, so no hours:
+
+```
+📅 OGGI (24/08/2026)
+🟢 Nessuna allerta su tutte le zone.
+
+📅 DOMANI (25/08/2026)
+Bollettino non ancora emesso.
+```
+
+The bulletin repeats the same phenomena and scenario text on every zone in alert, so within each day they are de-duplicated and printed once.
+
+---
+
+## ☁️ Google Drive Backup Monitor
+
+Uploads all sensitive JARVIS configuration files to a "JARVIS Backup" folder on Google Drive on a cron schedule. Uses `drive.file` OAuth scope — JARVIS can only access files it created; no full Drive access is required.
+
+**Files backed up:**
+
+| File | Content |
+|------|---------|
+| `options.json` | Add-on configuration (all API keys and tokens) |
+| `jarvis_settings.json` | Runtime settings from the Web UI |
+| `google_calendar_token.json` | Google Calendar OAuth2 token |
+| `google_gmail_token.json` | Gmail OAuth2 token |
+| `google_tasks_token.json` | Google Tasks OAuth2 token |
+| `gdrive_backup_token.json` | Google Drive Backup OAuth2 token |
+| `tasks.json` | Scheduled tasks |
+| `monitors.json` | Scheduled monitors |
+| `live_monitors.json` | Live monitors |
+| `ha_monitors.json` | HA monitors |
+| `agents.json` | Custom agents |
+
+**Setup:**
+
+1. Send `/backupauth` to the Telegram bot and complete the OAuth2 flow.
+2. Create a monitor of type ☁️ Google Drive Backup with your preferred cron schedule.
+3. No location field is required.
+
+**Restore procedure:** download the files from the "JARVIS Backup" folder on Google Drive and place them in `/data/` inside the HA add-on container.
+
+**Example configuration:**
+
+```
+Name:     Weekly Drive backup
+Type:     ☁️ Google Drive Backup
+Cron:     0 6 * * 1
+```
+
+The Telegram message confirms how many files were uploaded or updated and lists any files that were skipped (not found on disk).
+
+---
+
+## Testing and Duplicating
+
+- **▶ Test Monitor**: triggers an immediate execution. Result delivered to Telegram within seconds.
+- **⎘ Copy**: creates a copy named `Copy of <name>`, disabled by default. Useful for the same monitor type at multiple locations or with different schedules.

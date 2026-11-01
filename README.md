@@ -1,10 +1,10 @@
-# DRADIS Agentic AI for Home Assistant
+# JARVIS for Home Assistant
 
-DRADIS is a Home Assistant add-on that exposes a conversational AI agent controllable via Telegram. The agent is fully configurable from the built-in Web UI and the HA Configuration tab — no code changes required.
+JARVIS is a Home Assistant add-on that exposes a conversational AI agent controllable via Telegram. The agent is fully configurable from the built-in Web UI and the HA Configuration tab — no code changes required.
 
 ## Architecture (v3.0)
 
-DRADIS is **one agent** with a **flat set of tools** — no coordinator, no sub-agents, no orchestration framework. On each message the model is called with the system prompt, the conversation and the selected tool schemas; when it requests a tool the runtime runs the function, feeds the result back, and loops until a plain-text answer is produced. This runs on a thin tool-calling loop over the `openai` SDK, pointed at any OpenAI-compatible provider.
+JARVIS is **one agent** with a **flat set of tools** — no coordinator, no sub-agents, no orchestration framework. On each message the model is called with the system prompt, the conversation and the selected tool schemas; when it requests a tool the runtime runs the function, feeds the result back, and loops until a plain-text answer is produced. This runs on a thin tool-calling loop over the `openai` SDK, pointed at any OpenAI-compatible provider.
 
 > v3.0 removed the **agno** framework. A probe on Groq's `gpt-oss-120b` measured a raw request with 8 tool schemas at ~800 prompt tokens versus ~8800 through agno — the framework added ~8000 tokens per request, making the 8K free-tier limit unreachable. Removing it was the fix.
 
@@ -13,12 +13,12 @@ DRADIS is **one agent** with a **flat set of tools** — no coordinator, no sub-
 - **Multi-provider LLM**: OpenRouter, OpenAI, GitHub Models, Gemini, Groq, Cloudflare Workers AI — switch provider and model at runtime from the Web UI; each provider has its own limits (tokens per minute, max tokens per request) in the *Providers* panel
 - **One model + fallback** — the single agent runs on the main model; on an API error or empty reply it retries once on the configured fallback model and posts `⚠️ fallback triggered — <error>`; if both fail, a clear `❌` message is sent
 - **Per-tool selection for tasks** — each task attaches only the tools it needs, keeping the prompt small (key to Groq's 8000 tokens-per-minute limit)
-- **Token budget** — the free-tier ceiling that bites is *tokens per minute*, a rolling 60-second budget counting every call a turn makes, and a turn re-sends the whole conversation on each tool round. DRADIS stays inside it rather than discovering it from a rejection: a fixed sampling temperature so a prompt costs the same number of rounds every run, a bound on those rounds, tool results trimmed to the model's real headroom, requests paced against a per-provider token bucket, and one retry on the delay a rate limit asks for. The size estimate is measured rather than assumed — tool schemas counted, text priced at the worst observed ratio, and the provider's own usage figures correcting it after every round — and a request too large for a whole minute is trimmed before it is sent, because waiting cannot shrink one. The per-minute ceiling is a per-provider setting, so moving off the free tier is a number to change. Cloudflare Workers AI bills a daily Neuron allowance instead of a minute, so there the cap is per request (32K by default) to keep one long page from spending the day. Plus a `max_tokens` completion cap, per-round token logging, and an optional *Log token usage* toggle that appends `🔢 in N · out N` to every reply
-- **Tool visibility** — an optional *Log tools used* toggle that appends `🔧 tool1, tool2` (the tools DRADIS called that turn) to every chat and task reply
+- **Token budget** — the free-tier ceiling that bites is *tokens per minute*, a rolling 60-second budget counting every call a turn makes, and a turn re-sends the whole conversation on each tool round. JARVIS stays inside it rather than discovering it from a rejection: a fixed sampling temperature so a prompt costs the same number of rounds every run, a bound on those rounds, tool results trimmed to the model's real headroom, requests paced against a per-provider token bucket, and one retry on the delay a rate limit asks for. The size estimate is measured rather than assumed — tool schemas counted, text priced at the worst observed ratio, and the provider's own usage figures correcting it after every round — and a request too large for a whole minute is trimmed before it is sent, because waiting cannot shrink one. The per-minute ceiling is a per-provider setting, so moving off the free tier is a number to change. Cloudflare Workers AI bills a daily Neuron allowance instead of a minute, so there the cap is per request (32K by default) to keep one long page from spending the day. Plus a `max_tokens` completion cap, per-round token logging, and an optional *Log token usage* toggle that appends `🔢 in N · out N` to every reply
+- **Tool visibility** — an optional *Log tools used* toggle that appends `🔧 tool1, tool2` (the tools JARVIS called that turn) to every chat and task reply
 - **Conversation history** with configurable depth — scheduled task answers are part of it, so you can reply to them
 - **Telegram error notifications** — all API failures are reported via Telegram, and so is any *tool* that failed: a `⚠️` message names the tool and the reason (page unreachable, account disconnected) ahead of the reply, so an answer built on missing data is not mistaken for a good one
 - **Model speed-test** — ranks models by tok/s, keeps top 5
-- 🎙️ **HA Assist** — DRADIS is a conversation agent for Home Assistant's voice pipeline: talk to it through any Assist voice assistant as you would in the Telegram chat (same tools, same history). Home commands stay with HA's local intent handling; DRADIS answers the rest, in spoken prose. `/rain`, `/storm` and `/stations` answer by voice without the model ("cosa dice il radar?", "misure a Napoli"); tasks and scheduled monitors can be run and switched on/off by voice, and speak their result on the assistant when ready; live monitors can announce their alerts by voice, with their own quiet hours. See the wiki page *HA Assist*
+- 🎙️ **HA Assist** — JARVIS is a conversation agent for Home Assistant's voice pipeline: talk to it through any Assist voice assistant as you would in the Telegram chat (same tools, same history). Home commands stay with HA's local intent handling; JARVIS answers the rest, in spoken prose. `/rain`, `/storm` and `/stations` answer by voice without the model ("cosa dice il radar?", "misure a Napoli"); tasks and scheduled monitors can be run and switched on/off by voice, and speak their result on the assistant when ready; live monitors can announce their alerts by voice, with their own quiet hours. See the wiki page *HA Assist*
 - 🚗 **Car Mode** — every alert, report and answer rewritten as plain spoken prose so CarPlay can read it aloud: icons, markup and links stripped, coordinates and record ids dropped, units and compass points spelled out (`12 km/h` → *12 chilometri orari*, `O` → *ovest*), lines joined into sentences, charts not sent. Deterministic — no model call, no added latency, no tokens. Toggle with `/car`
 
 ### Tools
@@ -40,7 +40,7 @@ The single agent calls these tools when relevant; each capability is enabled and
   - 🌧️ **Rain alert** — 15-min precipitation data from Open-Meteo; silent when clear
   - 🌍 **Seismic report** — event statistics from INGV GOSSIP JSON API (Campi Flegrei, Vesuvio, Ischia, Golfo di Napoli)
   - 📊 **Weather Charts** — LLM-free multi-model Open-Meteo forecast charts (temperature, precipitation, wind speed/gusts/direction, cloud cover, pressure, humidity, geopotential, …); one PNG per variable sent to Telegram — cloud cover as bars, wind direction as per-model arrow lanes
-  - ☁️ **Google Drive Backup** — uploads all sensitive DRADIS config files to a dedicated "DRADIS Backup" Drive folder; `drive.file` scope only (no full Drive access)
+  - ☁️ **Google Drive Backup** — uploads all sensitive JARVIS config files to a dedicated "JARVIS Backup" Drive folder; `drive.file` scope only (no full Drive access)
 - **Live Monitors** — persistent push-based monitors that react to external events in real time:
   - 🌩️ **Storm front / CBDR** — persistent Blitzortung MQTT listener; every 60 s the last 10 min of strikes are binned into concentric rings × 12 sectors and each sector's leading edge drives a bounded ladder of alerts. A ring is announced at most once, so **one storm produces at most 4 messages plus an all-clear** — no periodic re-alerting, ever. Each message says whether the storm is on a **collision course** or **will pass by** (CBDR — constant bearing, decreasing range) and carries a polar radar; when the evidence is inconclusive it says so instead of inventing an ETA. Radius 20–60 km: lightning reaches 10–15 km from the cell, so a smaller disc warns you once you are already in range. State survives restarts; no cron, no LLM
   - 🌧️ **Rain front** — reads the national weather radar (Dipartimento della Protezione Civile composite of 24 radars, Open Access, **no API key**) instead of a forecast model: where it is raining *now*, measured rather than predicted. Same bounded ring ladder as the storm front (radius 25–60 km — the radar picture is 11–16 min old when it arrives, so a smaller disc only reports rain that has already reached you), with the field's drift and closest approach — and no drift at all below half a pixel per frame, which is the only honest answer at 1 km resolution and 5-minute cadence; the feed is a reference-counted singleton, so a second monitor watching another town costs nothing extra. No new dependencies — Pillow decodes the float32 GeoTIFF, numpy samples it. Each alert also carries **what the nearest rain gauge actually measured** (MeteoHub / Agenzia ItaliaMeteo, ~5000 ground stations, no API key) — naming the station, the rate and the distance. Diagnostic only: it is printed beside the radar's estimate and decides nothing, because a gauge publishes later than the radar and a gauge that has stopped transmitting reads the same as a dry one
@@ -48,14 +48,14 @@ The single agent calls these tools when relevant; each capability is enabled and
   - 🌍 **Seismic live** — polls INGV GOSSIP JSON API every 60 s; alerts on new events and Automatic→Revised promotions; quiet-hours support
   - ⚽ **Football Betting** — polls a live-odds API every 5 min; alerts when a losing team's next-goal odds beat the winning team's and are below that window's own maximum, inside two 2nd-half minute windows whose bounds and maxima are settable; provider fallback; timezone-aware quiet hours; no cron, no LLM
 - **HA Monitors** — monitor any Home Assistant entity via MQTT statestream; two alert modes:
-  - **LLM**: DRADIS processes the state change with your binding instructions (can send Telegram, email, create tasks, etc.)
+  - **LLM**: JARVIS processes the state change with your binding instructions (can send Telegram, email, create tasks, etc.)
   - **Direct Telegram**: fixed-format message, zero LLM cost
   - Per-entity cooldown, state filter, 🔍 Discover entities from broker
   - Requires: Mosquitto broker add-on + MQTT integration + `mqtt_discoverystream_alt` (HACS)
 
 ### Web UI
 
-- Vertical left sidebar with collapsible sections: Settings (DRADIS, MQTT / Home Assistant, Position, MeteoHub, Car Mode, HA Assist, Telegram Bots), Tools (Web Search, Weather, Calendar, Gmail, Tasks, URL Fetch, Voice), Tasks, Scheduled Monitors, Live Monitors, HA Monitors
+- Vertical left sidebar with collapsible sections: Settings (JARVIS, MQTT / Home Assistant, Position, MeteoHub, Car Mode, HA Assist, Telegram Bots), Tools (Web Search, Weather, Calendar, Gmail, Tasks, URL Fetch, Voice), Tasks, Scheduled Monitors, Live Monitors, HA Monitors
 - All settings managed at runtime — no restart required
 - Live cron validation with next-fire preview
 - Live geocoding for monitors (city name → lat/lon)
@@ -65,16 +65,16 @@ The single agent calls these tools when relevant; each capability is enabled and
 ## Installation
 
 1. In Home Assistant go to **Settings → Apps → Install App → ⋮ → Repositories**
-2. Add: `https://github.com/procolo75/dradis`
-3. Find **DRADIS** in the store and click **Install**
+2. Add: `https://github.com/procolo75/jarvis`
+3. Find **JARVIS** in the store and click **Install**
 
 ## Usage Examples
 
 **Voice appointment** *(requires Voice + Google Calendar)*
 > 🎙️ *"Add a meeting with Marco on Friday at 3pm"*
-> → DRADIS transcribes the audio, creates the event in Google Calendar, and confirms in Telegram.
+> → JARVIS transcribes the audio, creates the event in Google Calendar, and confirms in Telegram.
 
-**HA Assist** *(voice assistant — Home Assistant handles home commands locally, DRADIS the rest)*
+**HA Assist** *(voice assistant — Home Assistant handles home commands locally, JARVIS the rest)*
 > 🗣️ *"Cosa dice il radar?"* → `/rain` + `/storm` read aloud, no model, no tokens
 > 🗣️ *"Dammi i dati della stazione meteo"* → `/stations` read aloud, each station named once
 > 🗣️ *"Lancia il monitor rischio temporali"* → "avviato"; minutes later the report is spoken on the same assistant
@@ -82,18 +82,18 @@ The single agent calls these tools when relevant; each capability is enabled and
 
 **Weather**
 > *"What's the weather in Milan tomorrow?"*
-> → DRADIS calls the Weather tool and replies with current conditions and a multi-day forecast.
+> → JARVIS calls the Weather tool and replies with current conditions and a multi-day forecast.
 
 **Web search**
 > *"What are the latest Home Assistant announcements?"*
-> → DRADIS searches the web via Tavily and sends a summarised answer.
+> → JARVIS searches the web via Tavily and sends a summarised answer.
 
 **Read a URL**
 > *"Summarise this article: https://www.example.com/article"*
-> → DRADIS fetches the page via Jina Reader and analyses the content. No API key required.
+> → JARVIS fetches the page via Jina Reader and analyses the content. No API key required.
 
 **Storm front** *(live monitor — no cron, no LLM, no token cost)*
-> DRADIS keeps a persistent MQTT connection to Blitzortung. Every 60 seconds the last 10 minutes of strikes are binned into concentric rings × 12 sectors; each sector's leading edge drives the alerts, and a ring is announced at most once — so a storm produces a handful of messages and then silence, never a stream. Each message answers the question that matters: is it coming at me, or going past?
+> JARVIS keeps a persistent MQTT connection to Blitzortung. Every 60 seconds the last 10 minutes of strikes are binned into concentric rings × 12 sectors; each sector's leading edge drives the alerts, and a ring is announced at most once — so a storm produces a handful of messages and then silence, never a stream. Each message answers the question that matters: is it coming at me, or going past?
 >
 > ```
 > ⚡ Temporale più vicino — Bacoli
@@ -123,19 +123,19 @@ The single agent calls these tools when relevant; each capability is enabled and
 > `/rain` and `/storm` show what a weather monitor sees right now — the chart it would attach to a real alert, plus where it believes it is, how fresh the data is, and why it is not alerting. It **perceives without deciding**: it never advances the monitor's state, so it can neither suppress nor duplicate a real alert. `/rain` works even on a disabled monitor, fetching one radar image on demand — useful precisely while you are still setting it up.
 
 **Seismic live alert** *(live monitor — INGV GOSSIP)*
-> DRADIS polls the INGV seismic API every 60 s for Campi Flegrei, Vesuvio, Ischia, and Golfo di Napoli. Sends an alert on new events and when Automatic events are promoted to Revised. Quiet-hours support.
+> JARVIS polls the INGV seismic API every 60 s for Campi Flegrei, Vesuvio, Ischia, and Golfo di Napoli. Sends an alert on new events and when Automatic events are promoted to Revised. Quiet-hours support.
 > Configure in Web UI → **Live Monitors** → `+` → Type: 🌍 Seismic live
 
 **HA sensor alert** *(HA monitor)*
-> DRADIS subscribes to selected entities via MQTT. When the state changes, an alert is sent via LLM instructions or a Direct Telegram template.
-> Full setup guide: [Wiki → HA Monitors](https://github.com/procolo75/dradis/wiki/HA-Monitors)
+> JARVIS subscribes to selected entities via MQTT. When the state changes, an alert is sent via LLM instructions or a Direct Telegram template.
+> Full setup guide: [Wiki → HA Monitors](https://github.com/procolo75/jarvis/wiki/HA-Monitors)
 
 **Google Drive Backup** *(scheduled monitor)*
-> Send `/backupauth`, complete the OAuth2 flow, then create a monitor of type ☁️ Google Drive Backup. DRADIS uploads all config and token files to a "DRADIS Backup" folder in your Drive every week — only files it created are accessible (`drive.file` scope).
+> Send `/backupauth`, complete the OAuth2 flow, then create a monitor of type ☁️ Google Drive Backup. JARVIS uploads all config and token files to a "JARVIS Backup" folder in your Drive every week — only files it created are accessible (`drive.file` scope).
 > `Cron: 0 6 * * 1` — Monitor type: ☁️ Google Drive Backup
 
 **Daily thunderstorm risk digest** *(scheduled monitor)*
-> Every morning DRADIS fetches CAPE, Lifted Index and CIN from Open-Meteo and computes a multiplicative TRS score (0.0–1.0) per time band. Calibration constants are auto-selected from the location's country. No LLM, no token cost.
+> Every morning JARVIS fetches CAPE, Lifted Index and CIN from Open-Meteo and computes a multiplicative TRS score (0.0–1.0) per time band. Calibration constants are auto-selected from the location's country. No LLM, no token cost.
 >
 > ```
 > ⛈️ Thunderstorm Monitor — Bacoli
@@ -151,7 +151,7 @@ The single agent calls these tools when relevant; each capability is enabled and
 > `Cron: 0 7 * * *` — Monitor type: ⛈️ Thunderstorm risk
 
 **Daily seismic report** *(scheduled monitor)*
-> Every morning at 8:00 DRADIS sends a statistical report of the last 24 hours of seismic activity (magnitude and depth histograms, event list).
+> Every morning at 8:00 JARVIS sends a statistical report of the last 24 hours of seismic activity (magnitude and depth histograms, event list).
 > `Cron: 0 8 * * *` — Monitor type: 🌍 Seismic report
 
 **Hourly rain alert** *(scheduled monitor)*
@@ -190,4 +190,4 @@ The single agent calls these tools when relevant; each capability is enabled and
 
 ## Documentation
 
-Full documentation is available in the **Documentation** tab of the add-on page in Home Assistant and on the [GitHub Wiki](https://github.com/procolo75/dradis/wiki).
+Full documentation is available in the **Documentation** tab of the add-on page in Home Assistant and on the [GitHub Wiki](https://github.com/procolo75/jarvis/wiki).

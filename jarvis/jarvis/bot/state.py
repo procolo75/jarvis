@@ -1,0 +1,825 @@
+"""
+bot/state.py
+────────────
+Global state, startup configuration, settings helpers, agent builders,
+fallback logic, history management, Markdown→HTML converter, and voice
+transcription. All other bot modules import from here.
+
+The _telegram_bot, _main_loop, and _scheduler globals are set by main.py
+during startup and mutated by bot.scheduler at runtime.
+"""
+
+import asyncio
+import contextvars
+import html
+import json
+import os
+import re
+import tempfile
+import time
+import traceback
+from dataclasses import dataclass, field
+from pathlib import Path
+
+from groq import Groq as GroqClient
+from telegram import Bot as _TelegramBot
+from telegram.constants import ParseMode
+from telegram.error import TimedOut
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+
+import core as agent_core
+from car_mode import to_spoken
+from web.store import (SETTINGS_DEFAULTS, SETTINGS_FILE, PROVIDER_URL_PARAMS,
+                       migrate_provider_limits)
+from agents.gcal    import GCAL_TOKEN_FILE, gcal_tools
+from agents.gmail   import GMAIL_TOKEN_FILE, gmail_tools
+from agents.gtasks  import GTASKS_TOKEN_FILE, gtasks_tools
+from agents.weather    import weather_tools
+from agents.web_search import web_search_tools
+
+# ── Startup options ───────────────────────────────────────────────────────────
+
+def _load_startup_options() -> dict:
+    try:
+        with open("/data/options.json") as f:
+            return json.load(f)
+    except Exception as e:
+        raise RuntimeError(f"Cannot read /data/options.json: {e}")
+
+
+_startup_options = _load_startup_options()
+
+TELEGRAM_TOKEN       = _startup_options["telegram_bot_token"]
+ALLOWED_CHAT_ID      = int(_startup_options["telegram_allowed_chat_id"])
+TAVILY_API_KEY        = _startup_options.get("tavily_api_key", "")
+GOOGLE_CLIENT_ID      = _startup_options.get("google_client_id", "")
+GOOGLE_CLIENT_SECRET  = _startup_options.get("google_client_secret", "")
+RAPIDAPI_FOOTBALL_KEY = _startup_options.get("rapidapi_football_key", "")
+WEB_PORT             = 8099
+
+API_KEYS = {
+    "openrouter": _startup_options.get("openrouter_api_key", ""),
+    "openai":     _startup_options.get("openai_api_key", ""),
+    "github":     _startup_options.get("github_token", ""),
+    "gemini":     _startup_options.get("gemini_api_key", ""),
+    "groq":       _startup_options.get("groq_api_key", ""),
+    "cloudflare": _startup_options.get("cloudflare_api_token", ""),
+}
+agent_core.setup(API_KEYS, {k: _startup_options.get(k, "") for k in PROVIDER_URL_PARAMS})
+
+_groq_client: GroqClient | None = (
+    GroqClient(api_key=API_KEYS["groq"]) if API_KEYS.get("groq") else None
+)
+
+# ── Runtime globals (set by main.py) ─────────────────────────────────────────
+
+_scheduler: AsyncIOScheduler              = AsyncIOScheduler()
+_telegram_bot                             = None
+_main_loop: asyncio.AbstractEventLoop | None = None
+
+# ── Extra bot registry ────────────────────────────────────────────────────────
+
+_extra_bots:     dict[str, "_TelegramBot"] = {}
+_extra_chat_ids: dict[str, int]            = {}
+
+
+def get_bot_and_chat(bot_id: str = "default") -> tuple:
+    if bot_id and bot_id != "default" and bot_id in _extra_bots:
+        return _extra_bots[bot_id], _extra_chat_ids[bot_id]
+    return _telegram_bot, ALLOWED_CHAT_ID
+
+
+def reload_extra_bots() -> None:
+    from web.store import load_bots
+    global _extra_bots, _extra_chat_ids
+    _extra_bots.clear()
+    _extra_chat_ids.clear()
+    for b in load_bots():
+        bid = b.get("id", "").strip()
+        tok = b.get("token", "").strip()
+        cid = b.get("chat_id")
+        if bid and tok and cid:
+            try:
+                _extra_bots[bid]     = _TelegramBot(token=tok)
+                _extra_chat_ids[bid] = int(cid)
+                print(f"[JARVIS] Extra bot loaded: id={bid!r} name={b.get('name')!r}")
+            except Exception as e:
+                print(f"[JARVIS] WARNING: cannot init bot {bid!r}: {e}")
+
+# ── Settings helpers ──────────────────────────────────────────────────────────
+
+_LEGACY_SETTINGS_MAP = {
+    "openrouter_model":  "model",
+    "istruzioni_agente": "agent_instructions",
+    "memoria_attiva":    "history_enabled",
+    "num_conversazioni": "history_depth",
+    "messaggio_avvio":   "startup_message",
+    "ws_abilitato":      "ws_enabled",
+    "ws_modello":        "ws_model",
+    "ws_istruzioni":     "ws_instructions",
+    "meteo_abilitato":   "weather_enabled",
+    "meteo_provider":    "weather_provider",
+    "meteo_modello":     "weather_model",
+    "meteo_istruzioni":  "weather_instructions",
+}
+
+
+def _init_settings() -> None:
+    if not SETTINGS_FILE.exists():
+        SETTINGS_FILE.parent.mkdir(parents=True, exist_ok=True)
+        SETTINGS_FILE.write_text(json.dumps(SETTINGS_DEFAULTS, ensure_ascii=False, indent=2))
+
+
+def read_settings() -> dict:
+    result = dict(SETTINGS_DEFAULTS)
+    try:
+        raw = json.loads(SETTINGS_FILE.read_text())
+        result.update(migrate_provider_limits(
+            {_LEGACY_SETTINGS_MAP.get(k, k): v for k, v in raw.items()}))
+    except Exception:
+        pass
+    return result
+
+
+def apply_provider_limits(settings: dict, provider: str) -> None:
+    """Load one provider's plan into the runtime: its per-minute budget and its
+    largest single request. Called for the primary and again for the fallback —
+    two keys, two plans."""
+    limits = (settings.get("provider_limits") or {}).get(provider) or {}
+    agent_core.set_provider_tpm(provider, limits.get("tpm"))
+    agent_core.set_provider_max_request(provider, limits.get("max_request"))
+
+
+def build_system_prompt() -> str:
+    settings     = read_settings()
+    tz_name      = settings.get("timezone", "UTC") or "UTC"
+    instructions = settings.get("agent_instructions", SETTINGS_DEFAULTS["agent_instructions"])
+    return f"It is {agent_core._now_str(tz_name)} ({tz_name}).\n{instructions}"
+
+
+# ── Conversation history ──────────────────────────────────────────────────────
+
+_history: list[dict] = []
+
+
+def save_turn(role: str, text: str, history_depth: int) -> None:
+    _history.append({"role": role, "content": text})
+    max_msg = history_depth * 2
+    while len(_history) > max_msg:
+        _history.pop(0)
+
+
+# A scheduled task's answer is an assistant turn like any other: without it, "and
+# tomorrow?" after a task's weather report reaches a model that never saw it.
+# Tasks only — monitor reports and live alerts stay out: a burst of storm rings
+# would push the real conversation out of a four-message history. Kept as plain
+# text (the HTML is for Telegram, not for the model) and capped, because the
+# newest message always survives the history budget whatever its size.
+_NOTIFICATION_MAX_CHARS = 1500
+_HTML_TAG_RE = re.compile(r"</?[a-zA-Z][^>]*>")
+
+
+def save_notification(source: str, text: str, settings: dict | None = None) -> None:
+    """Record an unsolicited message in the chat history, labelled with who sent it."""
+    settings = settings if settings is not None else read_settings()
+    if not settings.get("history_enabled", True):
+        return
+    plain = html.unescape(_HTML_TAG_RE.sub("", text or "")).strip()
+    if not plain:
+        return
+    if len(plain) > _NOTIFICATION_MAX_CHARS:
+        plain = plain[:_NOTIFICATION_MAX_CHARS].rstrip() + " …"
+    save_turn("assistant", f"[{source}]\n{plain}", settings.get("history_depth", 2))
+
+
+# A message count is not a size. Four turns of `history_depth * 2` can be four
+# 2048-token answers, which is a whole 8K window spent before the question is
+# even asked — so the count is a ceiling, and this is the real limit.
+_HISTORY_TOKEN_SHARE = 0.25
+
+
+def history_messages(model: str | None = None) -> list[dict]:
+    """Return prior turns as OpenAI chat messages (role/content) for the runtime,
+    newest first to survive, oldest dropped once they no longer fit."""
+    budget = int(agent_core.context_window_for(model or "") * _HISTORY_TOKEN_SHARE)
+    kept: list[dict] = []
+    used = 0
+    for m in reversed(_history):
+        cost = agent_core.estimate_tokens(m["content"])
+        if kept and used + cost > budget:
+            break
+        kept.append({"role": m["role"], "content": m["content"]})
+        used += cost
+    kept.reverse()
+    return kept
+
+
+# ── Telegram helpers ──────────────────────────────────────────────────────────
+
+def car_mode_enabled(settings: dict | None = None) -> bool:
+    """Whether outgoing messages should be rewritten for a car to read aloud.
+
+    Pass `settings` when the caller already has them; otherwise they are read
+    fresh, as everywhere else in JARVIS. Nothing caches this, which is why
+    toggling Car Mode needs no reload of any component.
+    """
+    s = settings if settings is not None else read_settings()
+    return bool(s.get("car_mode_enabled"))
+
+
+def for_car(text: str, lang: str = "it", parse_mode: str | None = ParseMode.HTML,
+            settings: dict | None = None) -> tuple[str, str | None]:
+    """`(text, parse_mode)` to send — rewritten for speech when Car Mode is on.
+
+    This is the gate; `car_mode.to_spoken` is the voice. Keeping them apart is
+    what lets the formatter be tested without a settings file existing.
+
+    It returns the parse mode rather than just the text, and every caller unpacks
+    both, because getting that half wrong FAILS THE SEND. Sanitising resolves
+    entities back into characters, so an answer containing "a < b" arrives at
+    Telegram as a literal `<` — which, parsed as HTML, is an unclosed tag and a
+    rejected message. There is no markup left to parse by then, so Car Mode drops
+    the parse mode entirely and the text goes as plain text.
+    """
+    if not car_mode_enabled(settings):
+        return text, parse_mode
+    return to_spoken(text, lang), None
+
+
+# ── Delivery outcome ──────────────────────────────────────────────────────────
+#
+# THREE outcomes, not two, and the third one is the whole point.
+#
+# A send that raises `TimedOut` did not fail to deliver — it failed to be
+# ANSWERED. The request went out, and with a photo upload it has very often been
+# accepted and forwarded to the chat by the time the read timeout expires. A
+# caller told `False` retries at its next poll, and the user's phone buzzes twice
+# with the same alert. That is not a hypothesis: a rain front event on 17 Aug 2026
+# delivered every one of its ring messages twice, two minutes apart, each pair
+# sharing one radar frame, and the `⏱️` line of the second copy proved the first
+# had never been committed.
+#
+# So the ambiguity is reported as ambiguity. `UNCONFIRMED` means "assume it
+# arrived": at worst one message is lost, out of a ring ladder that still has the
+# deeper rings and the all-clear behind it. Every other failure — no bot, bad
+# HTML, blocked chat, rate limit, refused connection — genuinely delivered
+# nothing and stays `REFUSED`, so those are still retried.
+DELIVERED   = True
+REFUSED     = False
+UNCONFIRMED = None
+
+
+def classify_send_failure(exc: BaseException) -> bool | None:
+    """`UNCONFIRMED` if the message may well have arrived, `REFUSED` if it cannot
+    have. `TimedOut` is checked as itself rather than as the `NetworkError` it
+    subclasses: a refused connection is a certainty, a timeout is not."""
+    return UNCONFIRMED if isinstance(exc, TimedOut) else REFUSED
+
+
+async def send_telegram(text: str, bot_id: str = "default",
+                        parse_mode: str = ParseMode.HTML,
+                        lang: str = "it") -> bool | None:
+    """Send a Telegram message. `DELIVERED` on a confirmed send, `REFUSED` when
+    nothing was delivered, `UNCONFIRMED` when the answer never came back.
+    Callers that need to react to delivery failure (e.g. live monitors that gate
+    state flags on a successful send) must inspect the return value — and must
+    treat `UNCONFIRMED` as delivered, or they will duplicate the message.
+
+    Car Mode is applied HERE, so every path that ends in a plain text message —
+    live monitors, HA monitors, error notices — is covered without each caller
+    having to remember. Callers that bypass this function (a photo caption, a
+    chunked report) apply `for_car` themselves; none of them also route through
+    here, so nothing is sanitised twice.
+    """
+    bot, chat_id = get_bot_and_chat(bot_id)
+    if not bot:
+        return REFUSED
+    text, parse_mode = for_car(text, lang, parse_mode)
+    started = time.monotonic()
+    try:
+        await bot.send_message(chat_id=chat_id, text=text, parse_mode=parse_mode)
+        return DELIVERED
+    except Exception as ex:
+        # The class and the elapsed time are the diagnosis: a 60 s TimedOut and a
+        # 0.3 s BadRequest used to print the same line and mean opposite things.
+        print(f"[JARVIS] send_telegram(bot_id={bot_id!r}) {type(ex).__name__} "
+              f"after {time.monotonic() - started:.1f}s: {ex}")
+        return classify_send_failure(ex)
+
+
+async def _send_error_telegram(msg: str, bot_id: str = "default") -> None:
+    await send_telegram(msg, bot_id=bot_id)
+
+
+# ── Markdown → HTML ───────────────────────────────────────────────────────────
+
+_FUNCTION_TAG_RE = re.compile(r'<function=[^>]+>.*?</function>', re.DOTALL)
+
+
+def md_to_html(text: str) -> str:
+    text = _FUNCTION_TAG_RE.sub('', text).strip()
+    text = html.escape(text)
+    text = re.sub(r'\*\*(.+?)\*\*', r'<b>\1</b>', text)
+    text = re.sub(r'\*(.+?)\*',     r'<i>\1</i>', text)
+    text = re.sub(r'`(.+?)`',       r'<code>\1</code>', text)
+    return text
+
+
+# ── Tool registry ─────────────────────────────────────────────────────────────
+#
+# JARVIS is ONE agent that owns a flat set of tools (no coordinator, no
+# sub-agents). Each capability contributes tool specs; which ones are attached
+# depends on: enabled flag + auth (for chat, all available) and, for a task, the
+# explicit per-tool selection. The model decides which tool to call.
+
+# Safety cap only, and it applies to the cleaned page: 12 000 characters of text
+# are worth having, 12 000 characters of signed thumbnail URLs are not. The real
+# trim happens in the runtime, which is the only place that knows the model window
+# and what is left of the minute's token budget.
+_READ_URL_MAX_CHARS = 12000
+
+async def _fetch_via_jina(client, url: str, *, as_text: bool = False) -> str:
+    from urllib.parse import quote
+    headers = {"Accept": "text/plain"}
+    if as_text:
+        # Skips the readability pass and returns the page's rendered text, links
+        # and all. Less tidy than the markdown, but it cannot decide that the
+        # article is boilerplate, which is the failure this exists to answer.
+        headers["X-Respond-With"] = "text"
+    resp = await client.get(
+        f"https://r.jina.ai/{quote(url, safe=':/?&=#%+,;@!$~*()[]')}",
+        headers=headers,
+        follow_redirects=True,
+    )
+    if resp.status_code >= 400:
+        raise agent_core.ToolError(
+            f"HTTP {resp.status_code} from r.jina.ai reading {url}")
+    return resp.text
+
+
+async def _fetch_link_summary(client, url: str) -> list[tuple[str, str]]:
+    """Ask the reader for the page's links instead of its text.
+
+    The readability pass that picks the content also picks which links belong
+    to it, and on an index built as cards it drops the ones that lead
+    somewhere. `X-With-Links-Summary: all` reports every anchor in the HTML.
+    """
+    from urllib.parse import quote
+    resp = await client.get(
+        f"https://r.jina.ai/{quote(url, safe=':/?&=#%+,;@!$~*()[]')}",
+        headers={"Accept": "application/json", "X-With-Links-Summary": "all"},
+        follow_redirects=True,
+    )
+    if resp.status_code >= 400:
+        raise agent_core.ToolError(
+            f"HTTP {resp.status_code} from r.jina.ai reading the links of {url}")
+    try:
+        links = resp.json()["data"]["links"]
+    except (ValueError, KeyError, TypeError) as e:
+        raise agent_core.ToolError(
+            f"r.jina.ai returned no link summary for {url} ({e})") from e
+    # Measured on 2026-09-09 the reader answers with a list of [label, href]
+    # pairs; its own documentation describes a {label: href} mapping. Both
+    # shapes are in circulation, so both are read.
+    if isinstance(links, dict):
+        pairs = list(links.items())
+    elif isinstance(links, list):
+        pairs = [item[:2] for item in links
+                 if isinstance(item, (list, tuple)) and len(item) >= 2]
+    else:
+        raise agent_core.ToolError(
+            f"r.jina.ai returned an unreadable link summary for {url}")
+    return [(str(label), str(href)) for label, href in pairs]
+
+
+async def read_url(url: str, links: str | None = None) -> str:
+    """Fetch a page as text through the Jina reader.
+
+    Two checks sit on top of the fetch. The status check, from v4.5.0: Jina
+    rate-limits its anonymous tier, and returning that error body as if it were
+    the page taught the model to summarise the error or call the tool again.
+
+    And the extraction check. Jina's readability pass decides what counts as
+    content, and on a school news archive it decided the month menu did: 11 615
+    characters of navigation, thumbnails and cookie banner, with none of the
+    eighteen headlines that were in the HTML. A model handed that has nothing to
+    answer with, so it calls the tool again — which is how one page read became
+    three rounds and a refused request. When what comes back is nearly all
+    addresses, the page is read again as plain text and the richer of the two
+    wins. That costs one HTTP request and no model tokens.
+
+    `links` answers the other half of that failure, the half the prose check
+    cannot see. pretemp.it's home page comes back as 3 626 characters of
+    perfectly good prose — share 0.71, so no second read — carrying none of the
+    three links to the forecasts that are in its HTML. The page is not the
+    thing to read; it is the way to find it. Asked for its links instead, the
+    reader returns them, and the model spends one cheap round choosing before
+    it spends an expensive one reading.
+    """
+    import httpx
+    if not url.startswith("http://") and not url.startswith("https://"):
+        raise agent_core.ToolError(
+            f"{url!r} is not a valid URL — it must start with http:// or https://")
+    async with httpx.AsyncClient(timeout=30) as client:
+        if links is not None:
+            # The link branch returns addresses, not prose: neither the prose
+            # share nor the character cap has anything to say about it.
+            return agent_core.format_links(
+                await _fetch_link_summary(client, url), links, url)
+        page  = agent_core.clean_page(await _fetch_via_jina(client, url))
+        prose = agent_core.prose_chars(page)
+        if page and prose / len(page) < agent_core.MIN_PROSE_SHARE:
+            try:
+                alt = agent_core.clean_page(await _fetch_via_jina(client, url, as_text=True))
+            except agent_core.ToolError:
+                alt = ""     # the first read worked; a failed second one is not fatal
+            if agent_core.prose_chars(alt) > prose:
+                print(f"[JARVIS] read_url: readability kept {prose} chars of prose "
+                      f"on {url}, text mode kept {agent_core.prose_chars(alt)} — using text mode")
+                page = alt
+    return page[:_READ_URL_MAX_CHARS]
+
+
+READ_URL_TOOL = {
+    "name": "read_url", "fn": read_url, "capability": None,
+    "description": "Fetch and return the text content of a web page. Call this only when the user explicitly provides an http:// or https:// URL. Do NOT call it for questions or search queries. If the page you need is only reachable through a link on that page, call this first with the 'links' argument to find its address.",
+    "parameters": {"type": "object", "properties": {
+        "url": {"type": "string"},
+        "links": {"type": "string", "description": "Optional. Return the page's links whose text or address contains this string, instead of the page content; then call read_url again on the address you picked. Empty string returns every link."},
+    }, "required": ["url"]},
+}
+
+# Capability metadata: id + UI label + settings key holding extra instructions.
+CAPABILITIES = [
+    {"id": "web_search", "label": "Web Search",     "instr": "ws_instructions"},
+    {"id": "weather",    "label": "Weather",         "instr": "weather_instructions"},
+    {"id": "gcal",       "label": "Google Calendar", "instr": "gcal_instructions"},
+    {"id": "gmail",      "label": "Gmail",           "instr": "gmail_instructions"},
+    {"id": "gtasks",     "label": "Google Tasks",    "instr": "gtasks_instructions"},
+    {"id": "jarvis",     "label": "JARVIS control",  "instr": "control_instructions"},
+]
+
+
+def _capability_tool_groups(settings: dict) -> dict:
+    """Return {capability_id: [tool specs]} for enabled + authenticated capabilities."""
+    groups: dict = {}
+    if settings.get("ws_enabled") and TAVILY_API_KEY:
+        groups["web_search"] = web_search_tools(settings, TAVILY_API_KEY)
+    if settings.get("weather_enabled"):
+        groups["weather"] = weather_tools(settings)
+    if settings.get("gcal_enabled") and GCAL_TOKEN_FILE.exists():
+        groups["gcal"] = gcal_tools(settings)
+    if settings.get("gmail_enabled") and GMAIL_TOKEN_FILE.exists():
+        groups["gmail"] = gmail_tools(settings)
+    if settings.get("gtasks_enabled") and GTASKS_TOKEN_FILE.exists():
+        groups["gtasks"] = gtasks_tools(settings)
+    if settings.get("control_tools_enabled", True):
+        # Imported here: control imports this module.
+        from bot.control import control_tools
+        groups["jarvis"] = control_tools(settings)
+    for cap_id, specs in groups.items():
+        for t in specs:
+            t["capability"] = cap_id
+    return groups
+
+
+def build_tools(settings: dict, selected=None) -> list[dict]:
+    """Return the tool specs to attach.
+
+    selected: None or ["*"] → all available; a list of tool names and/or
+    capability ids → just those; [] → no tools.
+    """
+    groups = _capability_tool_groups(settings)
+    flat: list[dict] = []
+    for specs in groups.values():
+        flat.extend(specs)
+    if settings.get("read_url_enabled"):
+        flat.append(READ_URL_TOOL)
+    if selected is None or (isinstance(selected, list) and "*" in selected):
+        return flat
+    sel = set(selected)
+    return [t for t in flat if t["name"] in sel or (t.get("capability") and t["capability"] in sel)]
+
+
+def available_tools(settings: dict) -> list[dict]:
+    """Flat tool catalogue for the Web UI (only enabled + authenticated tools)."""
+    groups = _capability_tool_groups(settings)
+    out = []
+    for cap in CAPABILITIES:
+        for t in groups.get(cap["id"], []):
+            out.append({"capability": cap["id"], "capability_label": cap["label"],
+                        "name": t["name"], "description": t["description"]})
+    if settings.get("read_url_enabled"):
+        out.append({"capability": "read_url", "capability_label": "Read URL",
+                    "name": "read_url", "description": READ_URL_TOOL["description"]})
+    return out
+
+
+def task_tool_selection(task: dict):
+    """Resolve a task's tool selection. Supports the new `tools` field (list of
+    tool names / capability ids) and the legacy `agents` field. None/["*"] = all."""
+    sel = task.get("tools")
+    if sel is None:
+        sel = task.get("agents")
+    if sel is None or (isinstance(sel, list) and "*" in sel):
+        return None
+    return sel
+
+
+# Routing rule, not a per-tool behaviour rule: it says WHEN to reach for the tool,
+# so it belongs with the global instructions rather than under the scoped header.
+_READ_URL_RULE = ("When the user gives an http:// or https:// URL, call read_url "
+                  "to fetch the page and answer from it.")
+
+# get_weather lists "rain" among its triggers, so "is it going to rain?" went to
+# the forecast. Rain or storms NOW / in the next hour, or any mention of the
+# radar, is the radar's question; hours and days ahead are the forecast's.
+_RADAR_RULE = ("Rain or storms happening now or arriving within the next hour, or any "
+               "mention of the radar, /rain or /storm: call radar_now, not get_weather. "
+               "get_weather is for forecasts hours or days ahead.")
+
+# Without this header the per-capability instructions are bare sentences sitting
+# directly under `agent_instructions`, which is to say indistinguishable from
+# global rules — so "report temperatures in Celsius" would shape a web search
+# too. Naming the capability and its tools is what binds each instruction to the
+# one tool it was written for.
+_TOOL_INSTRUCTIONS_HEADER = (
+    "Tool-specific instructions. Each line applies ONLY while you are using that "
+    "tool, and must not influence any other answer:")
+
+
+def _system_prompt(settings: dict, tools: list[dict]) -> str:
+    base = build_system_prompt()  # time + agent_instructions (reads settings itself)
+
+    tools_by_cap: dict[str, list[str]] = {}
+    for tool in tools:
+        cap = tool.get("capability")
+        if cap:
+            tools_by_cap.setdefault(cap, []).append(tool["name"])
+
+    scoped = []
+    for cap in CAPABILITIES:
+        names = tools_by_cap.get(cap["id"])
+        if not names:
+            continue
+        instr = (settings.get(cap["instr"]) or "").strip()
+        if instr:
+            scoped.append(f"- {cap['label']} ({', '.join(names)}): {instr}")
+
+    extra = []
+    if any(t["name"] == "read_url" for t in tools):
+        extra.append(_READ_URL_RULE)
+    if any(t["name"] == "radar_now" for t in tools):
+        extra.append(_RADAR_RULE)
+    if scoped:
+        extra.append(_TOOL_INSTRUCTIONS_HEADER + "\n" + "\n".join(scoped))
+    return base + ("\n\n" + "\n\n".join(extra) if extra else "")
+
+
+# ── Runner (single agent, one model, with fallback) ───────────────────────────
+
+def _apply_fallback_settings(settings: dict) -> dict:
+    """Swap the main model/provider for the configured fallback (used for messaging)."""
+    s = dict(settings)
+    fb_model = (s.get("fallback_model") or "").strip()
+    fb_prov  = (s.get("fallback_provider") or "").strip()
+    if fb_model:
+        s["model"] = fb_model
+        if fb_prov:
+            s["provider"] = fb_prov
+    return s
+
+
+async def run_jarvis(
+    user_prompt: str,
+    settings: dict,
+    *,
+    selected=None,
+    history: list[dict] | None = None,
+    context_label: str = "JARVIS",
+) -> tuple:
+    """Run JARVIS as ONE agent with the selected tools, retrying once on the
+    fallback model.
+
+    Returns (AgentResult|None, used_fallback: bool, error|None, fb_reason|None)
+    where fb_reason is the primary error that triggered the fallback (set whenever
+    the fallback ran, whether it then succeeded or not)."""
+    agent_core.set_generation_config(settings.get("max_tokens"),
+                                     settings.get("temperature"))
+    max_tokens = settings.get("max_tokens") or None
+    model      = settings.get("model",    SETTINGS_DEFAULTS["model"])
+    provider   = settings.get("provider", SETTINGS_DEFAULTS["provider"])
+    # The limits belong to the plan behind each API key, so they are per-provider
+    # settings, applied again below if the fallback sits on another provider.
+    apply_provider_limits(settings, provider)
+    tools      = build_tools(settings, selected)
+    system     = _system_prompt(settings, tools)
+    # Six rounds was a ceiling nobody asked for: every round re-sends the whole
+    # transcript, so on a page-reading task rounds four to six are pure cost with
+    # no answer in them. Three is enough to fetch, react and reply.
+    rounds     = int(settings.get("tool_call_limit") or SETTINGS_DEFAULTS["tool_call_limit"])
+
+    tool_names = ", ".join(t["name"] for t in tools) or "none"
+    print(f"[JARVIS] {context_label}: model={model} provider={provider} "
+          f"tools={len(tools)} [{tool_names}] "
+          f"window={agent_core.context_window_for(model)} "
+          f"ceiling={agent_core.ceiling_for(model, provider)}")
+
+    async def _attempt(m: str, p: str):
+        return await agent_core.run_agent(
+            system, user_prompt, tools, m, p,
+            max_tokens=max_tokens, history=history, tool_call_limit=rounds,
+        )
+
+    error = None
+    try:
+        res = await _attempt(model, provider)
+        if not res.failed:
+            print(f"[JARVIS] {context_label} ok · prompt_tokens={res.prompt_tokens} "
+                  f"completion={res.completion_tokens} tools_used={res.tools_used}")
+            return res, False, None, None
+        error = RuntimeError(f"Model {model!r} returned empty content.")
+    except Exception as e:
+        error = e
+        print(f"[JARVIS] {context_label} primary error: {e}")
+
+    fb_model = (settings.get("fallback_model") or "").strip()
+    if not fb_model:
+        return None, False, error, None
+    fb_provider = (settings.get("fallback_provider") or "").strip() or provider
+    apply_provider_limits(settings, fb_provider)
+    print(f"[JARVIS] {context_label} fallback → {fb_model} ({fb_provider})")
+    # A rate limit belongs to the API key, not the model. When the fallback sits on
+    # the provider that just refused us, firing the identical payload a heartbeat
+    # later refuses it again — and the user reads "both models failed" for what was
+    # a two-second wait.
+    fb_delay = agent_core.retry_after_seconds(error) if fb_provider == provider else None
+    if fb_delay:
+        print(f"[JARVIS] {context_label} waiting {fb_delay + 0.5:.1f}s before fallback "
+              f"(same provider was rate limited)")
+        await asyncio.sleep(fb_delay + 0.5)
+    try:
+        res = await _attempt(fb_model, fb_provider)
+        if res.failed:
+            raise RuntimeError(f"Fallback model {fb_model!r} returned empty content.")
+        print(f"[JARVIS] {context_label} fallback ok · prompt_tokens={res.prompt_tokens}")
+        return res, True, None, error
+    except Exception as e2:
+        print(f"[JARVIS] {context_label} fallback error: {e2}")
+        return None, True, e2, error
+
+
+def reply_footer(settings: dict, result) -> str:
+    """Optional per-message footer appended to chat & task replies. Each line is
+    gated by its own setting: 'Log token usage' adds input/output token counts,
+    'Log tools used' adds the tools JARVIS called this turn (deduped, in order).
+    Returns a ready-to-append HTML fragment (leading blank line + <i>…</i>), or "".
+    """
+    if result is None:
+        return ""
+    # Car Mode drops the footer entirely rather than sanitising it: "in 1234, out
+    # 567" read aloud is diagnostics competing with an alert for the driver's
+    # attention. One check here covers both callers — chat and scheduled tasks.
+    if car_mode_enabled(settings):
+        return ""
+    lines: list[str] = []
+    if settings.get("token_usage_enabled"):
+        lines.append(f"🔢 in {result.prompt_tokens} · out {result.completion_tokens}")
+    if settings.get("tools_usage_enabled"):
+        used = list(dict.fromkeys(result.tools_used or []))
+        lines.append("🔧 " + (", ".join(used) if used else "no tools"))
+    if not lines:
+        return ""
+    # Telegram HTML parse_mode supports only a small tag set (no <br>); use a real
+    # newline to separate the footer lines inside the italic block.
+    return "\n\n<i>" + "\n".join(lines) + "</i>"
+
+
+def _tool_errors_msg(settings: dict, result, task_name: str | None = None) -> str:
+    """Telegram notice listing the tools that failed this turn, or "".
+
+    Sent as its own message rather than folded into `reply_footer`, and for one
+    reason: the footer is dropped entirely in Car Mode. Token counts are
+    diagnostics and can go; a tool that failed is not diagnostics. It decides
+    whether the answer underneath can be trusted at all, and that has to reach
+    the driver too.
+    """
+    if result is None or not settings.get("tool_errors_enabled", True):
+        return ""
+    errors = getattr(result, "tool_errors", None)
+    if not errors:
+        return ""
+    # One line per distinct tool: a model that retried a failing fetch three times
+    # ran into one problem, not three.
+    seen: dict[str, str] = {}
+    for name, reason in errors:
+        seen.setdefault(name, reason)
+    prefix = f"Task <b>{html.escape(task_name)}</b>: " if task_name else ""
+    lines  = [f"⚠️ {prefix}tool failure — the answer below may be incomplete."]
+    lines += [f"• <code>{html.escape(name)}</code>: {html.escape(reason)}"
+              for name, reason in seen.items()]
+    return "\n".join(lines)
+
+
+def _fallback_msg(reason, task_name: str | None = None) -> str:
+    """Telegram note when the fallback model was used — just that it triggered and
+    the error that caused it."""
+    prefix = f"⚠️ Task <b>{html.escape(task_name)}</b>: " if task_name else "⚠️ "
+    return f"{prefix}fallback triggered — {html.escape(str(reason))}"
+
+
+# ── One chat turn (Telegram and HA Assist) ────────────────────────────────────
+
+@dataclass
+class ChatTurn:
+    """What one conversational turn produced, before anyone formats it.
+
+    `text` is the model's answer ("" when it gave none). `error` is set, as
+    Telegram HTML, when no model answered at all. `notices` are the side
+    messages (fallback used, tools that failed): they go to Telegram, never into
+    a spoken answer."""
+    text:    str = ""
+    result:  object = None
+    error:   str = ""
+    notices: list = field(default_factory=list)
+
+
+# Where the current turn came from: {"source": "chat"|"assist", "device_id",
+# "language"}. Set by `chat_turn` for its duration, read by the control tools
+# (bot/control.py) — a task started by voice must also SPEAK its result, on the
+# device that asked.
+CHANNEL: contextvars.ContextVar = contextvars.ContextVar("jarvis_channel", default=None)
+
+
+def current_channel() -> dict:
+    return CHANNEL.get() or {"source": "chat"}
+
+
+async def chat_turn(question: str, settings: dict, source: str = "chat",
+                    remember: bool = True, channel: dict | None = None) -> ChatTurn:
+    """Ask JARVIS one question as the chat does: every available tool and the
+    one shared conversation history. Telegram and HA Assist both come through
+    here, so a question asked aloud can be followed up in the chat and the
+    other way round. `remember=False` reads the history but leaves no trace
+    (the Web UI's test question)."""
+    history_enabled = settings.get("history_enabled", True)
+    history_depth   = settings.get("history_depth", 2)
+    model   = settings.get("model", SETTINGS_DEFAULTS["model"])
+    history = history_messages(model) if history_enabled else None
+
+    # Chat gets all available tools; the single agent decides which to call.
+    token = CHANNEL.set(channel or {"source": source})
+    try:
+        result, used_fallback, error, fb_reason = await run_jarvis(
+            question, settings, selected=None, history=history, context_label=source,
+        )
+    finally:
+        CHANNEL.reset(token)
+    turn = ChatTurn(result=result)
+    if error is not None:
+        fb_model_id = _apply_fallback_settings(settings).get("model", model)
+        if used_fallback:
+            turn.error = (
+                f"❌ Both primary (<code>{html.escape(model)}</code>) and "
+                f"fallback (<code>{html.escape(fb_model_id)}</code>) models failed: "
+                f"{html.escape(str(error))}"
+            )
+        else:
+            turn.error = (
+                f"❌ Model error (<code>{html.escape(model)}</code>): {html.escape(str(error))}\n"
+                "<i>No fallback model configured.</i>"
+            )
+        return turn
+
+    if used_fallback:
+        turn.notices.append(_fallback_msg(fb_reason))
+    tool_errors = _tool_errors_msg(settings, result)
+    if tool_errors:
+        turn.notices.append(tool_errors)
+
+    turn.text = (result.content or "").strip()
+    if history_enabled and remember:
+        save_turn("user", question, history_depth)
+        save_turn("assistant", turn.text, history_depth)
+    return turn
+
+
+# ── Voice transcription ───────────────────────────────────────────────────────
+
+async def transcribe_voice(file_path: str, model: str, language: str) -> str:
+    """Transcribe an OGG voice message to text using the Groq Whisper API."""
+    if _groq_client is None:
+        raise RuntimeError("Groq API key not configured — cannot transcribe voice message.")
+
+    def _sync_transcribe():
+        with open(file_path, "rb") as f:
+            result = _groq_client.audio.transcriptions.create(
+                file=(os.path.basename(file_path), f.read()),
+                model=model,
+                language=language,
+                response_format="text",
+            )
+        return result.strip() if isinstance(result, str) else result.text.strip()
+
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, _sync_transcribe)

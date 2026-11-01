@@ -1,5 +1,10 @@
 # CHANGELOG
 
+## [5.0.3] - 2026-11-01
+
+- **Fix — no more Python end-of-life warning from `google.api_core` in the log.** The add-on image
+  moves from Python 3.11 to 3.13 (Alpine 3.24), and its dependencies are installed fresh.
+
 ## [5.0.2] - 2026-11-01
 
 - **Change — one-time move code removed.** It had done its job and is no longer shipped.

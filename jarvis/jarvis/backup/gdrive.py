@@ -19,6 +19,7 @@ Files backed up:
   /data/monitors.json
   /data/live_monitors.json
   /data/ha_monitors.json
+  /data/blink_monitor.json
 
 Left out on purpose:
   /data/{storm,rain,hail}_front_state.json — expire within an hour, so any copy
@@ -50,6 +51,7 @@ _BACKUP_FILES = [
     Path("/data/monitors.json"),
     Path("/data/live_monitors.json"),
     Path("/data/ha_monitors.json"),
+    Path("/data/blink_monitor.json"),
 ]
 
 

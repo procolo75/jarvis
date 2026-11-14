@@ -25,6 +25,7 @@ TASKS_FILE         = Path("/data/tasks.json")
 MONITORS_FILE      = Path("/data/monitors.json")
 LIVE_MONITORS_FILE = Path("/data/live_monitors.json")
 HA_MONITORS_FILE   = Path("/data/ha_monitors.json")
+BLINK_MONITOR_FILE = Path("/data/blink_monitor.json")
 OPTIONS_FILE       = Path("/data/options.json")
 SETTINGS_FILE      = Path("/data/jarvis_settings.json")
 
@@ -347,6 +348,29 @@ def save_ha_monitors(items: list[dict]) -> None:
     HA_MONITORS_FILE.write_text(json.dumps(items, ensure_ascii=False, indent=2))
 
 
+# Blink motion → Telegram (events published by the blink-mqtt add-on).
+BLINK_MONITOR_DEFAULTS = {
+    "enabled":         False,
+    "telegram_bot_id": "default",
+    "mqtt_prefix":     "blink",
+    "cameras":         [],     # empty = all; serial or display name
+    "cooldown_s":      0,      # 0 = every motion event
+    "language":        "it",
+}
+
+
+def load_blink_monitor() -> dict:
+    try:
+        data = json.loads(BLINK_MONITOR_FILE.read_text())
+    except Exception:
+        data = {}
+    return {**BLINK_MONITOR_DEFAULTS, **(data if isinstance(data, dict) else {})}
+
+
+def save_blink_monitor(cfg: dict) -> None:
+    BLINK_MONITOR_FILE.write_text(json.dumps(cfg, ensure_ascii=False, indent=2))
+
+
 def toggle_task(task_id: str) -> bool | None:
     items = load_tasks()
     for item in items:
@@ -434,6 +458,8 @@ _on_live_monitors_changed: Callable | None = None
 _get_live_monitor_status_fn: Callable | None = None
 _on_ha_monitors_changed: Callable | None = None
 _get_ha_monitor_status_fn: Callable | None = None
+_on_blink_monitor_changed: Callable | None = None
+_get_blink_monitor_status_fn: Callable | None = None
 
 
 def register_tasks_changed_callback(fn: Callable) -> None:
@@ -474,6 +500,21 @@ def register_ha_monitors_changed_callback(fn: Callable) -> None:
 def register_ha_monitor_status_callback(fn: Callable) -> None:
     global _get_ha_monitor_status_fn
     _get_ha_monitor_status_fn = fn
+
+
+def register_blink_monitor_changed_callback(fn: Callable) -> None:
+    global _on_blink_monitor_changed
+    _on_blink_monitor_changed = fn
+
+
+def register_blink_monitor_status_callback(fn: Callable) -> None:
+    global _get_blink_monitor_status_fn
+    _get_blink_monitor_status_fn = fn
+
+
+def _notify_blink_monitor_changed() -> None:
+    if _on_blink_monitor_changed:
+        _on_blink_monitor_changed()
 
 
 def _notify_tasks_changed() -> None:

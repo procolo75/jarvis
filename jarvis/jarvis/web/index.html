@@ -313,6 +313,10 @@
           <span class="nav-icon">📡</span>
           <span class="nav-label">MQTT / Home Assistant</span>
         </li>
+        <li class="nav-item" data-panel="blink" id="nav-blink">
+          <span class="nav-icon">📷</span>
+          <span class="nav-label">Blink</span>
+        </li>
         <li class="nav-item" data-panel="position" id="nav-position">
           <span class="nav-icon">📍</span>
           <span class="nav-label">Position</span>
@@ -1639,6 +1643,82 @@
         <div class="btn-row">
           <button class="btn-save" id="btn-save-ha-mqtt">Save</button>
         </div>
+      </div>
+    </div>
+
+    <!-- Panel: Blink -->
+    <div class="panel" id="panel-blink">
+      <div class="form-card">
+        <h2>📷 Blink</h2>
+        <p style="color:var(--text-muted);font-size:0.88rem;margin-top:0">
+          On every Blink motion clip, sends the snapshot and then the recorded video to Telegram.
+          Status: <span id="blink-status">—</span>
+        </p>
+
+        <div class="form-group">
+          <label><input type="checkbox" id="blink-enabled"> Enabled</label>
+        </div>
+
+        <div class="form-group">
+          <label for="blink-bot-id">Telegram bot</label>
+          <select id="blink-bot-id" style="max-width:280px"></select>
+        </div>
+
+        <div class="form-group">
+          <label for="blink-cameras">Cameras</label>
+          <input type="text" id="blink-cameras" placeholder="all" style="max-width:420px">
+          <small style="color:var(--text-muted);margin-top:4px;display:block">Comma-separated camera names or serials. Empty = every camera.</small>
+        </div>
+
+        <div class="form-group">
+          <label for="blink-cooldown">Cooldown per camera (seconds)</label>
+          <input type="number" id="blink-cooldown" min="0" step="10" style="width:100px">
+          <small style="color:var(--text-muted);margin-top:4px;display:block">0 = every motion event. Photo and clip of one event always go together.</small>
+        </div>
+
+        <div class="form-group">
+          <label for="blink-language">Language</label>
+          <select id="blink-language" style="max-width:140px">
+            <option value="it">Italiano</option>
+            <option value="en">English</option>
+          </select>
+        </div>
+
+        <div class="form-group">
+          <label for="blink-prefix">blink-mqtt topic prefix</label>
+          <input type="text" id="blink-prefix" placeholder="blink" style="max-width:220px">
+        </div>
+
+        <div class="form-group">
+          <label>Connection test</label>
+          <div style="display:flex;gap:10px;align-items:center">
+            <button class="btn-icon" id="btn-blink-test">Test</button>
+            <span id="blink-test-result" style="font-size:0.85rem;color:var(--text-muted)"></span>
+          </div>
+        </div>
+
+        <div class="btn-row">
+          <button class="btn-save" id="btn-save-blink">Save</button>
+        </div>
+
+        <details style="margin-top:20px">
+          <summary style="cursor:pointer;color:var(--text-muted);font-size:0.88rem">
+            How it works
+          </summary>
+          <div style="font-size:0.85rem;color:var(--text-muted);line-height:1.6;margin-top:10px">
+            <p>Requires the <b>blink-mqtt</b> add-on ≥ 1.3.1 on the same broker (configured in
+            <i>MQTT / Home Assistant</i>). The add-on keeps the Blink login; JARVIS only forwards.</p>
+            <p>For every new clip the add-on publishes <code>blink/cameras/{serial}/event/snapshot</code>
+            (JPEG) and then <code>blink/cameras/{serial}/event/clip</code> (MP4). It works with
+            Sync Module USB storage and no Blink subscription: the clip is listed only once its
+            recording has finished, so the message arrives a few tens of seconds after the motion
+            (clip length + add-on poll interval).</p>
+            <p>No LLM is involved — no tokens are spent per event. In <b>Car Mode</b> the photo
+            becomes one text line and the video is skipped.</p>
+            <p><b>Test</b> checks the broker, reads the add-on availability and the camera names,
+            then sends a test message with the selected bot.</p>
+          </div>
+        </details>
       </div>
     </div>
 
@@ -5672,6 +5752,69 @@ document.getElementById("btn-save-ha-mqtt").addEventListener("click", async () =
 document.getElementById("nav-ha-mqtt").addEventListener("click", async () => {
   navigateTo("ha-mqtt", document.getElementById("nav-ha-mqtt"));
   try { await loadHaMqttSettings(); } catch {}
+});
+
+// ── Blink panel ───────────────────────────────────────────────────────────────
+
+async function loadBlinkPanel() {
+  try { bots = await api("GET", "/api/bots"); } catch {}
+  const c = await api("GET", "/api/blink-monitor");
+  document.getElementById("blink-enabled").checked = !!c.enabled;
+  document.getElementById("blink-bot-id").innerHTML = renderBotSelector(c.telegram_bot_id);
+  document.getElementById("blink-cameras").value   = (c.cameras || []).join(", ");
+  document.getElementById("blink-cooldown").value  = c.cooldown_s ?? 0;
+  document.getElementById("blink-language").value  = c.language || "it";
+  document.getElementById("blink-prefix").value    = c.mqtt_prefix || "blink";
+  try {
+    const st = await api("GET", "/api/blink-monitor/status");
+    document.getElementById("blink-status").textContent = st.status === "running" ? "🟢 running" : "⚪ stopped";
+  } catch {}
+}
+
+document.getElementById("btn-save-blink").addEventListener("click", async () => {
+  const btn = document.getElementById("btn-save-blink");
+  btn.disabled = true;
+  const payload = {
+    enabled:         document.getElementById("blink-enabled").checked,
+    telegram_bot_id: document.getElementById("blink-bot-id").value,
+    cameras:         document.getElementById("blink-cameras").value.split(",").map(x => x.trim()).filter(Boolean),
+    cooldown_s:      parseFloat(document.getElementById("blink-cooldown").value) || 0,
+    language:        document.getElementById("blink-language").value,
+    mqtt_prefix:     document.getElementById("blink-prefix").value.trim() || "blink",
+  };
+  try {
+    await api("PUT", "/api/blink-monitor", payload);
+    showToast("Blink settings saved.");
+    setTimeout(() => loadBlinkPanel().catch(() => {}), 800);
+  } catch (e) {
+    showToast(e.message || "Error saving Blink settings", true);
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+document.getElementById("btn-blink-test").addEventListener("click", async () => {
+  const btn    = document.getElementById("btn-blink-test");
+  const result = document.getElementById("blink-test-result");
+  btn.disabled = true;
+  result.textContent = "Testing…";
+  result.style.color = "var(--text-muted)";
+  try {
+    const d = await api("POST", "/api/blink-monitor/test");
+    const n = Object.keys(d.cameras || {}).length;
+    result.textContent = `✅ add-on ${d.availability}, ${n} camera(s)` + (d.telegram ? ", test message sent" : ", ⚠️ Telegram send failed");
+    result.style.color = "var(--success, #43a047)";
+  } catch (e) {
+    result.textContent = `❌ ${e.message || "Test failed"}`;
+    result.style.color = "var(--danger, #e53935)";
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+document.getElementById("nav-blink").addEventListener("click", async () => {
+  navigateTo("blink", document.getElementById("nav-blink"));
+  try { await loadBlinkPanel(); } catch {}
 });
 
 // ── Positions panel ───────────────────────────────────────────────────────────

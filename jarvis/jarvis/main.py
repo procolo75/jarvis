@@ -31,6 +31,7 @@ from bot.scheduler import (
     reload_monitor_jobs,
     reload_live_monitors,
     reload_ha_monitors,
+    reload_blink_monitor,
     run_scheduled_task,
     run_scheduled_monitor,
     _live_status_dispatcher,
@@ -75,12 +76,15 @@ from web.store import (
     register_live_monitor_status_callback,
     register_ha_monitors_changed_callback,
     register_ha_monitor_status_callback,
+    register_blink_monitor_changed_callback,
+    register_blink_monitor_status_callback,
     register_bots_changed_callback,
     register_positions_changed_callback,
     migrate_legacy_position,
     persist_provider_limits,
 )
 from live_monitors.ha import ha_monitor_manager
+from live_monitors.blink import blink_monitor_manager
 import assist
 
 
@@ -189,6 +193,8 @@ async def main():
         register_live_monitor_status_callback(_live_status_dispatcher)
         register_ha_monitors_changed_callback(reload_ha_monitors)
         register_ha_monitor_status_callback(ha_monitor_manager.status)
+        register_blink_monitor_changed_callback(reload_blink_monitor)
+        register_blink_monitor_status_callback(blink_monitor_manager.status)
 
         reload_task_jobs()
         reload_monitor_jobs()
@@ -201,6 +207,10 @@ async def main():
             print(f"[JARVIS] WARNING: provider limits migration failed: {e}")
         reload_live_monitors()
         reload_ha_monitors()
+        try:
+            reload_blink_monitor()
+        except Exception as e:
+            print(f"[JARVIS] WARNING: Blink monitor start failed: {e}")
         await assist.startup(_state.WEB_PORT, notify=_state.send_telegram)
 
         settings    = _state.read_settings()

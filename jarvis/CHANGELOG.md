@@ -1,5 +1,17 @@
 # CHANGELOG
 
+## [5.1.0] - 2026-11-14
+
+- **New — Blink → Telegram.** On every Blink motion clip JARVIS sends the snapshot and then the
+  recorded video (playable in the chat). The blink-mqtt add-on (≥ 1.3.1) does the Blink work and
+  publishes both on MQTT; JARVIS only forwards, so the Blink login stays in one place and the
+  Telegram bots in the other. Works with Sync Module USB storage, no Blink subscription. No LLM is
+  called, so an event costs no tokens. Settings in the new **Blink** sidebar panel: bot, cameras
+  (names or serials, empty = all), per-camera cooldown (0 = every event), language, topic prefix,
+  and a **Test** button that checks the broker, the add-on and the camera names and sends a test
+  message. In Car Mode the photo becomes one text line and the video is skipped.
+- `/data/blink_monitor.json` is included in the Google Drive backup.
+
 ## [5.0.4] - 2026-11-01
 
 - **Fix — the Google Drive backup now carries `assist_token`.** After a restore, HA Assist keeps

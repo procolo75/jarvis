@@ -52,10 +52,11 @@ The single agent calls these tools when relevant; each capability is enabled and
   - **Direct Telegram**: fixed-format message, zero LLM cost
   - Per-entity cooldown, state filter, 🔍 Discover entities from broker
   - Requires: Mosquitto broker add-on + MQTT integration + `mqtt_discoverystream_alt` (HACS)
+- 📷 **Blink → Telegram** — on every Blink motion clip, sends the snapshot and then the recorded video. Fed by the **blink-mqtt** add-on (≥ 1.3.1) over MQTT; works with Sync Module USB storage and no Blink subscription; no LLM, zero tokens; Car Mode sends one text line instead
 
 ### Web UI
 
-- Vertical left sidebar with collapsible sections: Settings (JARVIS, MQTT / Home Assistant, Position, MeteoHub, Car Mode, HA Assist, Telegram Bots), Tools (Web Search, Weather, Calendar, Gmail, Tasks, URL Fetch, Voice), Tasks, Scheduled Monitors, Live Monitors, HA Monitors
+- Vertical left sidebar with collapsible sections: Settings (JARVIS, MQTT / Home Assistant, Blink, Position, MeteoHub, Car Mode, HA Assist, Telegram Bots), Tools (Web Search, Weather, Calendar, Gmail, Tasks, URL Fetch, Voice), Tasks, Scheduled Monitors, Live Monitors, HA Monitors
 - All settings managed at runtime — no restart required
 - Live cron validation with next-fire preview
 - Live geocoding for monitors (city name → lat/lon)

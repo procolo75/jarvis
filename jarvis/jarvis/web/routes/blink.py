@@ -1,7 +1,7 @@
 """
 web/routes/blink.py
 ───────────────────
-Blink panel: forwards motion snapshot + clip published by the blink-mqtt add-on
+Blink panel: forwards the motion clip published by the blink-mqtt add-on
 to Telegram (see live_monitors/blink.py).
 
 GET  /api/blink-monitor         current config (defaults filled in)

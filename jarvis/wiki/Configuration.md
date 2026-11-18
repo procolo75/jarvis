@@ -75,7 +75,7 @@ All runtime data is stored in `/data/` (inside the add-on container — never ex
 | `/data/live_monitors.json` | Live monitors (storm front, seismic live, football betting) |
 | `/data/storm_front_state.json`, `/data/rain_front_state.json`, `/data/hail_front_state.json` | Front event state, restored on startup while still recent |
 | `/data/ha_monitors.json` | HA entity monitors |
-| `/data/blink_monitor.json` | Blink → Telegram (motion snapshot + clip) |
+| `/data/blink_monitor.json` | Blink → Telegram (motion clip) |
 | `/data/assist_token` | Secret of the Home Assistant JARVIS integration (HA Assist) |
 | `/data/google_calendar_token.json` | Google Calendar OAuth token |
 | `/data/google_gmail_token.json` | Gmail OAuth token |

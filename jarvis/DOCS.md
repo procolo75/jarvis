@@ -114,7 +114,7 @@ It is sent as its own message, ahead of the reply, and unlike the `🔢`/`🔧` 
 | `live_monitors/position.py` | Named positions — one MQTT listener on the HA broker serving every configured phone; `PositionSource` + `PositionManager` singleton |
 | `live_monitors/position_core.py` | Pure position logic — lat/lon pairing, fix age, speed/course, discontinuity detection. No I/O, fully unit-tested |
 | `live_monitors/replay.py` | Offline replay of a recorded storm through the decision core — used to tune sensitivity on real data |
-| `live_monitors/blink.py` | Blink → Telegram — MQTT listener for blink-mqtt motion events, sends snapshot then clip; `BlinkMonitor` + `BlinkMonitorManager` singleton |
+| `live_monitors/blink.py` | Blink → Telegram — MQTT listener for blink-mqtt motion events, sends the clip; `BlinkMonitor` + `BlinkMonitorManager` singleton |
 | `live_monitors/ha.py` | HA Monitor — persistent MQTT listener for Home Assistant entity state changes; `HaLiveMonitor` + `HaMonitorManager` singleton |
 | `live_monitors/seismic.py` | Seismic live monitor — polls INGV GOSSIP JSON API every 60 s, alerts on new events and state promotions |
 | `live_monitors/football.py` | Football Betting live monitor — polls RapidAPI every 5 min (clock-aligned); `FootballLiveMonitor` + `FootballMonitorManager` singleton |
@@ -1487,25 +1487,26 @@ mqtt_discoverystream_alt:
 
 ### Blink → Telegram
 
-Forwards Blink motion events to Telegram: the **snapshot** first, then the **recorded clip** as a
-playable video. Needs the **blink-mqtt** add-on ≥ 1.3.1 on the same MQTT broker — the add-on keeps
+Forwards Blink motion events to Telegram as the **recorded clip**, a playable video. No photo:
+the only image Blink offers is the camera's home-screen thumbnail, which a motion clip does not
+refresh. Needs the **blink-mqtt** add-on ≥ 1.3.1 on the same MQTT broker — the add-on keeps
 the Blink login, JARVIS only forwards. Works with Sync Module USB storage and no Blink
 subscription: a clip is listed once its recording has finished, so the message arrives a few tens
-of seconds after the motion. No LLM is called, so an event costs no tokens. In Car Mode the photo
+of seconds after the motion. No LLM is called, so an event costs no tokens. In Car Mode the event
 becomes one text line and the video is skipped. Configuration is stored in `/data/blink_monitor.json`.
 
 | Field | Description |
 |---|---|
 | Enabled | Starts/stops the MQTT listener. |
-| Telegram bot | Bot used for photo and video. |
+| Telegram bot | Bot used for the video. |
 | Cameras | Comma-separated names or serials; empty = all cameras. |
-| Cooldown per camera (s) | 0 = every event. Photo and clip of one event always go together. |
+| Cooldown per camera (s) | 0 = every event. |
 | Language | Caption language. |
 | blink-mqtt topic prefix | Default `blink`. |
 | Test | Checks the broker, reads `blink/availability` and the camera names, sends a test message. |
 
-Topics read: `{prefix}/cameras/{serial}/event/snapshot` (JPEG), `{prefix}/cameras/{serial}/event/clip`
-(MP4), `{prefix}/cameras/{serial}/name` (retained).
+Topics read: `{prefix}/cameras/{serial}/event/clip` (MP4), `{prefix}/cameras/{serial}/name`
+(retained). The MQTT broker pushes each clip to JARVIS: nothing is polled on this side.
 
 ---
 

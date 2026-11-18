@@ -535,8 +535,8 @@ def reload_ha_monitors():
 def reload_blink_monitor():
     """(Re)start the Blink listener from /data/blink_monitor.json.
 
-    Photo and video go straight to the bot with explicit timeouts, like the
-    photo path in `reload_live_monitors`: the clip is an upload of a few MB, so
+    The clip goes straight to the bot with explicit timeouts, like the photo
+    path in `reload_live_monitors`: it is an upload of a few MB, so
     write_timeout is generous. Car Mode is read at send time by the monitor.
     """
     settings = _state.read_settings()
@@ -548,36 +548,25 @@ def reload_blink_monitor():
     bid  = cfg.get("telegram_bot_id", "default")
     lang = cfg.get("language", "it")
 
-    async def _media(kind: str, data: bytes, caption: str):
+    async def _video(data: bytes, caption: str):
         bot, chat_id = _state.get_bot_and_chat(bid)
         if not bot:
             return _state.REFUSED
         started = time.monotonic()
         try:
-            if kind == "photo":
-                await bot.send_photo(chat_id=chat_id, photo=data, caption=caption,
-                                     connect_timeout=20, pool_timeout=20,
-                                     read_timeout=60, write_timeout=120)
-            else:
-                await bot.send_video(chat_id=chat_id, video=data, caption=caption,
-                                     supports_streaming=True,
-                                     connect_timeout=20, pool_timeout=20,
-                                     read_timeout=90, write_timeout=180)
+            await bot.send_video(chat_id=chat_id, video=data, caption=caption,
+                                 supports_streaming=True,
+                                 connect_timeout=20, pool_timeout=20,
+                                 read_timeout=90, write_timeout=180)
             return _state.DELIVERED
         except Exception as e:
-            print(f"[JARVIS] Blink send_{kind}(bot_id={bid!r}) {type(e).__name__} "
+            print(f"[JARVIS] Blink send_video(bot_id={bid!r}) {type(e).__name__} "
                   f"after {time.monotonic() - started:.1f}s: {e}")
             return _state.classify_send_failure(e)
-
-    async def _photo(data: bytes, caption: str):
-        return await _media("photo", data, caption)
-
-    async def _video(data: bytes, caption: str):
-        return await _media("video", data, caption)
 
     async def _text(text: str):
         return await _state.send_telegram(text, bot_id=bid, lang=lang)
 
-    sender = BlinkSender(photo=_photo, video=_video, text=_text,
+    sender = BlinkSender(video=_video, text=_text,
                          car_mode=_state.car_mode_enabled)
     blink_monitor_manager.reload(cfg, mqtt_cfg, sender, tz_name)

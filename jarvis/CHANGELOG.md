@@ -1,5 +1,13 @@
 # CHANGELOG
 
+## [5.1.1] - 2026-11-18
+
+- **Change — Blink sends only the video.** The photo is gone: it was the camera's home-screen
+  thumbnail, which a motion clip does not refresh, so it showed an older scene instead of the
+  motion. The clip caption now reads `🎬 Movimento — {camera} · {time}`; cooldown and the Car Mode
+  text line are now decided on the clip. Pairs with blink-mqtt 1.4.0, which no longer publishes
+  `event/snapshot`; with an older blink-mqtt that topic is simply ignored.
+
 ## [5.1.0] - 2026-11-14
 
 - **New — Blink → Telegram.** On every Blink motion clip JARVIS sends the snapshot and then the

@@ -1,34 +1,38 @@
 """
 live_monitors/blink.py
 ──────────────────────
-Forwards Blink motion events from the blink-mqtt add-on to Telegram:
-the snapshot first, then the recorded clip.
+Forwards Blink motion events from the blink-mqtt add-on to Telegram as the
+recorded clip.
 
 Division of labour
 ──────────────────
 blink-mqtt owns the Blink session (login, OTP, token refresh) and does all the
 Blink work: when a new motion clip has finished recording — also with Sync
-Module USB storage and no subscription — it publishes, in this order and never
-retained:
+Module USB storage and no subscription — it publishes, never retained:
 
-    {prefix}/cameras/{serial}/event/snapshot   JPEG bytes
     {prefix}/cameras/{serial}/event/clip       MP4 bytes (~1-3 MB for 10 s)
 
 plus the retained display name on {prefix}/cameras/{serial}/name.
 JARVIS owns Telegram, so this module only listens and forwards. No LLM is
-involved: a motion photo needs no wording, and every event would cost tokens.
+involved: a motion clip needs no wording, and every event would cost tokens.
+There is no polling here: the broker pushes each clip to this subscriber.
 
-Event pairing and cooldown
-──────────────────────────
-The cooldown is decided on the snapshot. A clip is sent when its snapshot was
-sent (the pair is one alert), or — when the add-on had no image — on its own
-cooldown check. A cooldown of 0 sends every event.
+No photo
+────────
+blink-mqtt < 1.4.0 also published {prefix}/cameras/{serial}/event/snapshot.
+It was the camera's home-screen thumbnail, which a motion clip does not
+refresh, so it showed an older scene. It is ignored even if an older add-on
+still sends it (v5.1.1).
+
+Cooldown
+────────
+Per camera, decided on the clip. A cooldown of 0 sends every event.
 
 Car Mode
 ────────
-A car cannot show a photo or play a video, and CarPlay reads a media
-notification as "Image" or not at all. In Car Mode the snapshot becomes one text
-line (send_telegram rewrites it for speech) and the clip is dropped.
+A car cannot play a video, and CarPlay reads a media notification as "Image"
+or not at all. In Car Mode the event becomes one text line (send_telegram
+rewrites it for speech) and the clip is dropped.
 """
 
 import asyncio
@@ -47,15 +51,15 @@ RECONNECT_DELAY = 15
 DEFAULT_PREFIX  = "blink"
 
 _TEXTS = {
-    "it": {"motion": "📷 Movimento — {name} · {time}", "clip": "🎬 {name} · {time}"},
-    "en": {"motion": "📷 Motion — {name} · {time}",    "clip": "🎬 {name} · {time}"},
+    "it": {"motion": "📷 Movimento — {name} · {time}", "clip": "🎬 Movimento — {name} · {time}"},
+    "en": {"motion": "📷 Motion — {name} · {time}",    "clip": "🎬 Motion — {name} · {time}"},
 }
 
 
 def parse_topic(prefix: str, topic: str) -> tuple[str, str] | None:
     """`(serial, kind)` for the topics this monitor uses, else None.
 
-    kind is "name", "snapshot" or "clip".
+    kind is "name" or "clip".
     """
     head = f"{prefix}/cameras/"
     if not topic.startswith(head):
@@ -63,15 +67,14 @@ def parse_topic(prefix: str, topic: str) -> tuple[str, str] | None:
     parts = topic[len(head):].split("/")
     if len(parts) == 2 and parts[1] == "name":
         return parts[0], "name"
-    if len(parts) == 3 and parts[1] == "event" and parts[2] in ("snapshot", "clip"):
-        return parts[0], parts[2]
+    if len(parts) == 3 and parts[1] == "event" and parts[2] == "clip":
+        return parts[0], "clip"
     return None
 
 
 @dataclass
 class BlinkSender:
     """Telegram side, injected so the monitor can be tested without a bot."""
-    photo:    Callable[[bytes, str], Awaitable[object]]
     video:    Callable[[bytes, str], Awaitable[object]]
     text:     Callable[[str], Awaitable[object]]
     car_mode: Callable[[], bool]
@@ -96,7 +99,6 @@ class BlinkMonitor:
         self._send   = sender
         self._names: dict[str, str]     = {}
         self._last:  dict[str, float]   = {}   # serial → monotonic time of last alert
-        self._paired: set[str]          = set()  # serials whose snapshot was just sent
         self._task: asyncio.Task | None = None
 
     # ── lifecycle ─────────────────────────────────────────────────────────────
@@ -126,7 +128,7 @@ class BlinkMonitor:
                     await client.subscribe(f"{self.prefix}/cameras/+/name")
                     # QoS 1 end to end, matching the publisher: a 2 MB clip must
                     # not be dropped silently.
-                    await client.subscribe(f"{self.prefix}/cameras/+/event/+", qos=1)
+                    await client.subscribe(f"{self.prefix}/cameras/+/event/clip", qos=1)
                     async for message in client.messages:
                         try:
                             await self.handle(str(message.topic), message.payload,
@@ -174,24 +176,11 @@ class BlinkMonitor:
         stamp = datetime.now(self.tz).strftime("%H:%M")
         name  = self._name(serial)
 
-        if kind == "snapshot":
-            if not self._admit(serial, now):
-                self._paired.discard(serial)
-                return
-            self._paired.add(serial)
-            caption = self.texts["motion"].format(name=name, time=stamp)
-            if self._send.car_mode():
-                await self._send.text(caption)
-            else:
-                await self._send.photo(bytes(payload), caption)
-            return
-
         # kind == "clip"
-        if serial in self._paired:
-            self._paired.discard(serial)
-        elif not self._admit(serial, now):
+        if not self._admit(serial, now):
             return
         if self._send.car_mode():
+            await self._send.text(self.texts["motion"].format(name=name, time=stamp))
             return
         await self._send.video(bytes(payload), self.texts["clip"].format(name=name, time=stamp))
 

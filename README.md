@@ -52,7 +52,7 @@ The single agent calls these tools when relevant; each capability is enabled and
   - **Direct Telegram**: fixed-format message, zero LLM cost
   - Per-entity cooldown, state filter, 🔍 Discover entities from broker
   - Requires: Mosquitto broker add-on + MQTT integration + `mqtt_discoverystream_alt` (HACS)
-- 📷 **Blink → Telegram** — on every Blink motion clip, sends the snapshot and then the recorded video. Fed by the **blink-mqtt** add-on (≥ 1.3.1) over MQTT; works with Sync Module USB storage and no Blink subscription; no LLM, zero tokens; Car Mode sends one text line instead
+- 📷 **Blink → Telegram** — on every Blink motion clip, sends the recorded video. Fed by the **blink-mqtt** add-on (≥ 1.3.1) over MQTT; works with Sync Module USB storage and no Blink subscription; no LLM, zero tokens; Car Mode sends one text line instead
 
 ### Web UI
 

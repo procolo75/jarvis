@@ -46,7 +46,7 @@ They answer with **one message**: the picture the monitor would attach to a real
 
 The first two lines are the monitor and, when something is wrong with it, its data source — reported **separately**. A storm monitor whose lightning feed has not connected is *active and blind*, which is a different instruction to you than *switched off*, so the two never share a badge.
 
-Times are shown in the timezone configured in JARVIS settings, not the add-on container's clock.
+Times are shown in the timezone configured in JARVIS settings, not the app container's clock.
 
 ### They change nothing, and that is the point
 

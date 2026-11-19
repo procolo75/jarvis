@@ -1,6 +1,6 @@
 # Configuration
 
-All API keys and credentials are configured in the add-on **Configuration** tab in Home Assistant. All runtime settings (provider, model, tools, etc.) are managed from the **Web UI** and do not require a restart.
+All API keys and credentials are configured in the app **Configuration** tab in Home Assistant. All runtime settings (provider, model, tools, etc.) are managed from the **Web UI** and do not require a restart.
 
 ## Configuration Tab Fields
 
@@ -51,7 +51,7 @@ One credential covers Google Calendar, Gmail, and Google Tasks.
 
 5. **Credentials → Create credentials → OAuth client ID → Desktop app** → any name → **Create**
 6. Copy the **Client ID** and **Client Secret** from the dialog
-7. Paste them in the add-on Configuration tab (`google_client_id`, `google_client_secret`) and **restart the add-on**
+7. Paste them in the app Configuration tab (`google_client_id`, `google_client_secret`) and **restart the app**
 
 **Part 2 — Authorize each service (run once per service):**
 
@@ -63,7 +63,7 @@ Each service uses a separate token file. If the automatic redirect doesn't work 
 
 ## Persistent Data Files
 
-All runtime data is stored in `/data/` (inside the add-on container — never exposed in source):
+All runtime data is stored in `/data/` (inside the app container — never exposed in source):
 
 | File | Description |
 |------|-------------|

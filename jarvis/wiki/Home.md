@@ -1,6 +1,6 @@
 # JARVIS for Home Assistant — Wiki
 
-JARVIS is a Home Assistant add-on that exposes a conversational AI agent controllable via Telegram. All settings are managed from the built-in Web UI.
+JARVIS is a Home Assistant app that exposes a conversational AI agent controllable via Telegram. All settings are managed from the built-in Web UI.
 
 ## Contents
 
@@ -24,8 +24,8 @@ JARVIS is a Home Assistant add-on that exposes a conversational AI agent control
 
 ## Quick Start
 
-1. [Install the add-on](Installation) from the custom repository
+1. [Install the app](Installation) from the custom repository
 2. Fill in your credentials in the **Configuration** tab
-3. Start the add-on — JARVIS sends a startup message to your Telegram chat
+3. Start the app — JARVIS sends a startup message to your Telegram chat
 4. Open the **Web UI** from the HA sidebar to enable tools and create tasks
 5. Talk to the bot on Telegram — or on your voice assistant through [HA Assist](HA-Assist)

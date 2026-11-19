@@ -307,7 +307,7 @@ Uploads all sensitive JARVIS configuration files to a "JARVIS Backup" folder on 
 
 | File | Content |
 |------|---------|
-| `options.json` | Add-on configuration (all API keys and tokens) |
+| `options.json` | App configuration (all API keys and tokens) |
 | `jarvis_settings.json` | Runtime settings from the Web UI |
 | `google_calendar_token.json` | Google Calendar OAuth2 token |
 | `google_gmail_token.json` | Gmail OAuth2 token |
@@ -331,10 +331,10 @@ Each run overwrites the previous copy on Drive: the folder holds the latest back
 
 **Restore procedure:**
 
-1. Stop the add-on.
-2. Download the files from the "JARVIS Backup" folder on Google Drive and place them in `/data/` inside the HA add-on container, except `options.json`.
-3. Enter the values from `options.json` in the add-on's **Configuration** tab. Copying the file does not work: the Supervisor keeps the options in its own store and rewrites this file when the add-on starts.
-4. Start the add-on.
+1. Stop the app.
+2. Download the files from the "JARVIS Backup" folder on Google Drive and place them in `/data/` inside the HA app container, except `options.json`.
+3. Enter the values from `options.json` in the app's **Configuration** tab. Copying the file does not work: the Supervisor keeps the options in its own store and rewrites this file when the app starts.
+4. Start the app.
 
 **Example configuration:**
 

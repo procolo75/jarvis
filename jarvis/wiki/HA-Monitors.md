@@ -4,7 +4,7 @@ Monitor any Home Assistant entity via MQTT and receive a Telegram alert whenever
 
 ## Prerequisites
 
-- **Mosquitto broker** add-on (HA Add-on store)
+- **Mosquitto broker** app (HA app store)
 - **MQTT integration** (HA Devices & Services)
 - **`mqtt_discoverystream_alt`** custom integration (installed via HACS)
 
@@ -36,7 +36,7 @@ In the Web UI go to **Settings → MQTT / Home Assistant**:
 
 | Field | Default | Description |
 |-------|---------|-------------|
-| Broker host | `core-mosquitto` | Hostname or IP of the MQTT broker. Use `core-mosquitto` for the HA Mosquitto add-on. |
+| Broker host | `core-mosquitto` | Hostname or IP of the MQTT broker. Use `core-mosquitto` for the HA Mosquitto app. |
 | Port | `1883` | MQTT broker port. |
 | Username | *(blank)* | MQTT username (leave blank if no authentication). |
 | Password | *(blank)* | MQTT password. |

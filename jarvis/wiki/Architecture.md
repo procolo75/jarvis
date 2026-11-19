@@ -121,7 +121,7 @@ APScheduler (cron fire)
 ## Data Flow — HA Assist (voice)
 
 1. The voice assistant's pipeline tries Home Assistant's local intents first (*Prefer handling commands locally*): home commands end there.
-2. Anything else reaches the **JARVIS integration** in HA, which calls `POST /api/assist` on the add-on with the text, language and `device_id`.
+2. Anything else reaches the **JARVIS integration** in HA, which calls `POST /api/assist` on the app with the text, language and `device_id`.
 3. `web/routes/assist.py` checks the Bearer token, then:
    - a **direct command** (`control.match_radar` / `match_stations`) runs `/rain`, `/storm` or `/stations` without the model;
    - otherwise `state.chat_turn()` runs the same turn as a Telegram message (all tools, shared history), with the origin (`source=assist`, `device_id`) in `state.CHANNEL`.

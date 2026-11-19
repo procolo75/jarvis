@@ -4,8 +4,8 @@
 
 1. Check that `telegram_bot_token` and `telegram_allowed_chat_id` are set correctly in the Configuration tab.
 2. Confirm the Telegram user ID is the one configured (send a message to [@userinfobot](https://t.me/userinfobot) to check).
-3. Check the add-on log (HA → Add-ons → JARVIS → Log) for startup errors.
-4. Confirm the add-on is running (green "Running" indicator in HA).
+3. Check the app log (HA → Apps → JARVIS → Log) for startup errors.
+4. Confirm the app is running (green "Running" indicator in HA).
 
 ---
 
@@ -14,7 +14,7 @@
 1. Verify the LLM provider API key is correct and has credits.
 2. Try the **⚡ speed test** in the Web UI to check which models respond correctly.
 3. Configure a **Fallback Provider / Fallback Model** — JARVIS will retry automatically on failure.
-4. Check the add-on log for the error message from the provider.
+4. Check the app log for the error message from the provider.
 
 ---
 
@@ -49,7 +49,7 @@ What to check in the logs — each round now prints its own line:
 
 - Confirm the monitor is **Enabled** (green dot in sidebar).
 - For rain monitors: no message is sent when no rain is expected. This is intentional.
-- Check the add-on log for any HTTP or send errors.
+- Check the app log for any HTTP or send errors.
 - Use **▶ Test Monitor** to trigger an immediate run and see if the report arrives.
 
 ---
@@ -80,8 +80,8 @@ Since 4.4.2 a timeout logs `delivery UNCONFIRMED — committed anyway` instead a
 
 ## Live monitor shows 🔴 Stopped
 
-- Check the add-on log for MQTT connection errors.
-- Verify the MQTT broker is running (Mosquitto add-on in HA).
+- Check the app log for MQTT connection errors.
+- Verify the MQTT broker is running (Mosquitto app in HA).
 - For the Storm front monitor: verify the geohash topics are being published by the upstream data source.
 - Try disabling and re-enabling the monitor to force a reconnect.
 
@@ -191,11 +191,11 @@ This is the "retained message" behaviour: on MQTT connect the broker replays the
 
 ## HA Assist
 
-**JARVIS does not appear in *Add integration*.** Restart Home Assistant after the add-on has copied the integration (Telegram tells you when). Check that the add-on was **updated**, not rebuilt: the config-folder permission arrives with the update. The log says `[JARVIS] Assist: HA integration installed`.
+**JARVIS does not appear in *Add integration*.** Restart Home Assistant after the app has copied the integration (Telegram tells you when). Check that the app was **updated**, not rebuilt: the config-folder permission arrives with the update. The log says `[JARVIS] Assist: HA integration installed`.
 
-**"JARVIS non risponde" / cannot connect when adding it.** Use the URL and token from **Settings → 🎙️ HA Assist → Show URL and token** (`http://local-jarvis:8099` for a local add-on). The panel's *Status* shows the last request JARVIS received.
+**"JARVIS non risponde" / cannot connect when adding it.** Use the URL and token from **Settings → 🎙️ HA Assist → Show URL and token** (`http://local-jarvis:8099` for a local app). The panel's *Status* shows the last request JARVIS received.
 
-**The speaker test says nothing.** The test uses the speaker selected in the panel: pick one (🔄 reloads from HA). A `media_player.*` also needs a **TTS engine**. The log line `[JARVIS] Speaker: …` gives HA's answer; a `401/403` on `supervisor/core/api` means the add-on was rebuilt instead of updated.
+**The speaker test says nothing.** The test uses the speaker selected in the panel: pick one (🔄 reloads from HA). A `media_player.*` also needs a **TTS engine**. The log line `[JARVIS] Speaker: …` gives HA's answer; a `401/403` on `supervisor/core/api` means the app was rebuilt instead of updated.
 
 **A radar or stations question went to the model.** Direct commands need their words (*rain, storm, radar…, sta per piovere, misure/stazioni/sensori*); "com'è la situazione dei temporali?" has none, so the model answers (with `radar_now`). The Telegram copy's footer tells which: `🔧 radar_now (direct)` vs a token count.
 
@@ -203,15 +203,15 @@ This is the "retained message" behaviour: on MQTT connect the broker replays the
 
 ## Web UI not loading
 
-- Open the add-on in HA and click **Open Web UI** — this uses the correct HA Ingress URL.
-- Do not access the Web UI directly via the add-on port from outside HA (the API paths are ingress-relative).
-- If the page loads but settings don't save, check the add-on log for FastAPI errors.
+- Open the app in HA and click **Open Web UI** — this uses the correct HA Ingress URL.
+- Do not access the Web UI directly via the app port from outside HA (the API paths are ingress-relative).
+- If the page loads but settings don't save, check the app log for FastAPI errors.
 
 ---
 
 ## Logs
 
-View the add-on log in **Home Assistant → Settings → Add-ons → JARVIS → Log**. Key log patterns:
+View the app log in **Home Assistant → Settings → Apps → JARVIS → Log**. Key log patterns:
 
 | Log prefix | Meaning |
 |------------|---------|

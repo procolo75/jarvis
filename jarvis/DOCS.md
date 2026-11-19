@@ -252,7 +252,7 @@ Lets you edit all non-sensitive JARVIS settings at runtime without restarting th
 
 ### Settings → Providers
 
-The plan behind each API key. Keys themselves stay in the add-on Configuration tab; a 🟢 marks a provider whose key (and, for Cloudflare, account ID) is set. Saved to `provider_limits` in `/data/jarvis_settings.json`, applied on the next request.
+The plan behind each API key. Keys themselves stay in the app Configuration tab; a 🟢 marks a provider whose key (and, for Cloudflare, account ID) is set. Saved to `provider_limits` in `/data/jarvis_settings.json`, applied on the next request.
 
 | Field | Default | Description |
 |-------|---------|-------------|
@@ -459,7 +459,7 @@ model involved — and only what HA does not understand is passed to JARVIS.
 ```
 voice ──► HA Assist pipeline ──► HA local intents ── understood ──► HA acts (lights, switches…)
                                         │
-                                        └─ not understood ──► JARVIS integration ──► add-on /api/assist
+                                        └─ not understood ──► JARVIS integration ──► app /api/assist
                                                                                         │
                        ┌────────────────────────────────────────────────────────────────┘
                        ├─ /rain, /storm, /stations words ──► direct command (no model, no tokens)
@@ -468,13 +468,13 @@ voice ──► HA Assist pipeline ──► HA local intents ── understood 
 
 #### Setup (once)
 
-1. **Update** the add-on (not just rebuild: the new version asks for access to Home Assistant's
+1. **Update** the app (not just rebuild: the new version asks for access to Home Assistant's
    config folder, the Supervisor API and the Home Assistant API, and only an update applies
    permissions). JARVIS copies its integration to `/config/custom_components/jarvis` and sends a
    Telegram message: *restart Home Assistant*.
 2. Restart Home Assistant.
 3. In the JARVIS Web UI, **Settings → 🎙️ HA Assist → Show URL and token**. The URL is
-   `http://<add-on hostname>:8099` — `http://local-jarvis:8099` for a local add-on.
+   `http://<app hostname>:8099` — `http://local-jarvis:8099` for a local app.
 4. *Settings → Devices & services → Add integration → **JARVIS*** and paste URL and token.
    If *Discovered: JARVIS* appears instead, just confirm it: URL and token come with the discovery.
 5. *Settings → Voice assistants* → your assistant → **Conversation agent: JARVIS**, and turn on
@@ -592,13 +592,13 @@ Telegram delivery is unchanged and stays what the monitor tracks: the voice is f
 | Say a test sentence | Speaks on the selected speaker, saved or not. |
 | Status | Integration version, discovery, last question and how long it took. |
 | Test | Re-installs the integration if needed, announces JARVIS again and asks one question (not kept in the history). |
-| Show URL and token | For *Add integration → JARVIS*. Shown only through the add-on page (ingress). |
+| Show URL and token | For *Add integration → JARVIS*. Shown only through the app page (ingress). |
 
 #### Under the hood
 
 | Piece | Where |
 |---|---|
-| HA integration (config flow + conversation agent) | `ha_integration/jarvis/` — copied to `custom_components` by the add-on |
+| HA integration (config flow + conversation agent) | `ha_integration/jarvis/` — copied to `custom_components` by the app |
 | Install, token, discovery | `jarvis/assist.py` — token in `/data/assist_token` |
 | Endpoint called by HA | `POST /api/assist` (`Authorization: Bearer <token>`) in `web/routes/assist.py` |
 | One chat turn, shared with Telegram | `bot/state.py: chat_turn()`; origin of the turn in `state.CHANNEL` |
@@ -636,7 +636,7 @@ Configure the MQTT broker connection used by HA Monitors. Required before creati
 
 | Field | Default | Description |
 |-------|---------|-------------|
-| Broker host | `core-mosquitto` | Hostname or IP of the MQTT broker. Use `core-mosquitto` for the HA Mosquitto add-on. |
+| Broker host | `core-mosquitto` | Hostname or IP of the MQTT broker. Use `core-mosquitto` for the HA Mosquitto app. |
 | Port | `1883` | MQTT broker port. |
 | Username | *(blank)* | MQTT username (leave blank if the broker has no authentication). |
 | Password | *(blank)* | MQTT password. |
@@ -1441,7 +1441,7 @@ The data is the `POH` product of the Protezione Civile radar composite (free, no
 Monitor any Home Assistant entity via MQTT and receive a Telegram alert whenever its state changes. Each monitor has a configurable **alert mode**: **LLM** (JARVIS writes the message using your instructions and its full capabilities) or **Direct Telegram** (immediate fixed-format message, no LLM call). Per-entity cooldown and an optional state filter prevent spam. HA monitors are stored in `/data/ha_monitors.json`.
 
 **Prerequisites:**
-- Mosquitto broker add-on (HA Add-on store)
+- Mosquitto broker app (HA app store)
 - MQTT integration (HA Devices & Services)
 - `mqtt_discoverystream_alt` custom integration installed via HACS
 
@@ -1489,7 +1489,7 @@ mqtt_discoverystream_alt:
 
 Forwards Blink motion events to Telegram as the **recorded clip**, a playable video. No photo:
 the only image Blink offers is the camera's home-screen thumbnail, which a motion clip does not
-refresh. Needs the **blink-mqtt** add-on ≥ 1.3.1 on the same MQTT broker — the add-on keeps
+refresh. Needs the **blink-mqtt** app ≥ 1.3.1 on the same MQTT broker — the app keeps
 the Blink login, JARVIS only forwards. Works with Sync Module USB storage and no Blink
 subscription: a clip is listed once its recording has finished, so the message arrives a few tens
 of seconds after the motion. No LLM is called, so an event costs no tokens. In Car Mode the event

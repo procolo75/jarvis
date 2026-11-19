@@ -1,6 +1,6 @@
 # JARVIS for Home Assistant
 
-JARVIS is a Home Assistant add-on that exposes a conversational AI agent controllable via Telegram. The agent is fully configurable from the built-in Web UI and the HA Configuration tab — no code changes required.
+JARVIS is a Home Assistant app that exposes a conversational AI agent controllable via Telegram. The agent is fully configurable from the built-in Web UI and the HA Configuration tab — no code changes required.
 
 ## Architecture (v3.0)
 
@@ -51,8 +51,8 @@ The single agent calls these tools when relevant; each capability is enabled and
   - **LLM**: JARVIS processes the state change with your binding instructions (can send Telegram, email, create tasks, etc.)
   - **Direct Telegram**: fixed-format message, zero LLM cost
   - Per-entity cooldown, state filter, 🔍 Discover entities from broker
-  - Requires: Mosquitto broker add-on + MQTT integration + `mqtt_discoverystream_alt` (HACS)
-- 📷 **Blink → Telegram** — on every Blink motion clip, sends the recorded video. Fed by the **blink-mqtt** add-on (≥ 1.3.1) over MQTT; works with Sync Module USB storage and no Blink subscription; no LLM, zero tokens; Car Mode sends one text line instead
+  - Requires: Mosquitto broker app + MQTT integration + `mqtt_discoverystream_alt` (HACS)
+- 📷 **Blink → Telegram** — on every Blink motion clip, sends the recorded video. Fed by the **blink-mqtt** app (≥ 1.3.1) over MQTT; works with Sync Module USB storage and no Blink subscription; no LLM, zero tokens; Car Mode sends one text line instead
 
 ### Web UI
 
@@ -191,4 +191,4 @@ The single agent calls these tools when relevant; each capability is enabled and
 
 ## Documentation
 
-Full documentation is available in the **Documentation** tab of the add-on page in Home Assistant and on the [GitHub Wiki](https://github.com/procolo75/jarvis/wiki).
+Full documentation is available in the **Documentation** tab of the app page in Home Assistant and on the [GitHub Wiki](https://github.com/procolo75/jarvis/wiki).

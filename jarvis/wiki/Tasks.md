@@ -6,7 +6,7 @@ LLM Scheduled Tasks let you automate recurring JARVIS actions on a cron schedule
 
 When a task fires, its **Instructions** field is sent to the JARVIS agent exactly as if you had typed them in Telegram. JARVIS runs as a single agent on the main model with the **tools** you selected for the task, and calls whichever ones it needs. The result is delivered to your Telegram chat with a label identifying the task name.
 
-Cron jobs reload immediately on save/delete — no add-on restart required.
+Cron jobs reload immediately on save/delete — no app restart required.
 
 ## Tool selection & the Groq 8K limit (v3.0)
 

@@ -19,7 +19,7 @@ Runtime settings for the JARVIS agent. Saved to `/data/jarvis_settings.json`, ef
 | Fallback Provider | *(blank)* | Provider used when the primary call fails. |
 | Fallback Model | *(blank)* | Model to retry with on API error. Blank = no fallback. |
 | Agent instructions | `You are JARVIS, a versatile AI assistant.` | System prompt — role, behaviour, persistent facts about you. |
-| Startup message | `✅ JARVIS online and ready.` | Telegram message sent when the add-on starts. |
+| Startup message | `✅ JARVIS online and ready.` | Telegram message sent when the app starts. |
 | Conversation history | `true` | Prepend the last N exchanges as context. |
 | Conversation history depth | `2` | Past exchanges kept in context (resets on restart). Scheduled task answers are kept too. |
 | Max completion tokens | `2048` | Caps the reply (`max_tokens`) so prompt+reply fit the context window. Keep 2048 for Groq 8K. |
@@ -36,7 +36,7 @@ Runtime settings for the JARVIS agent. Saved to `/data/jarvis_settings.json`, ef
 
 ## Settings → Providers
 
-The plan behind each API key (keys stay in the add-on Configuration tab; 🟢 = configured). JARVIS sizes every request to the tightest of the model's window and these limits, for primary and fallback separately.
+The plan behind each API key (keys stay in the app Configuration tab; 🟢 = configured). JARVIS sizes every request to the tightest of the model's window and these limits, for primary and fallback separately.
 
 | Field | Default | Description |
 |-------|---------|-------------|
@@ -90,7 +90,7 @@ JARVIS as the conversation agent of your Home Assistant voice assistant — setu
 | Say a test sentence | Speaks on the selected speaker, saved or not. |
 | Status | Integration version, discovery, last question and how long it took. |
 | Test | Re-installs the integration if needed, announces JARVIS again and asks one question (not kept in the history). |
-| Show URL and token | For *Add integration → JARVIS*. Shown only through the add-on page (ingress). |
+| Show URL and token | For *Add integration → JARVIS*. Shown only through the app page (ingress). |
 
 ## Settings → MQTT / Home Assistant
 

@@ -21,10 +21,10 @@ After startup, JARVIS sends a confirmation message to your Telegram chat and exp
 
 ## HA Assist (optional) — JARVIS on your voice assistant
 
-The add-on ships a small Home Assistant integration and copies it into `custom_components` by itself. After the first start (or the update that introduced it) restart Home Assistant, then *Add integration → JARVIS* with the URL and token shown in the Web UI (**Settings → 🎙️ HA Assist**). Full guide: [[HA Assist|HA-Assist]].
+The app ships a small Home Assistant integration and copies it into `custom_components` by itself. After the first start (or the update that introduced it) restart Home Assistant, then *Add integration → JARVIS* with the URL and token shown in the Web UI (**Settings → 🎙️ HA Assist**). Full guide: [[HA Assist|HA-Assist]].
 
 ## Updating
 
-Home Assistant checks for new versions automatically. When a new version is available, an "Update" button appears in the add-on page. Click it to update — no configuration changes are required between releases unless explicitly noted in the [CHANGELOG](https://github.com/procolo75/jarvis/blob/main/jarvis/CHANGELOG.md).
+Home Assistant checks for new versions automatically. When a new version is available, an "Update" button appears in the app page. Click it to update — no configuration changes are required between releases unless explicitly noted in the [CHANGELOG](https://github.com/procolo75/jarvis/blob/main/jarvis/CHANGELOG.md).
 
 > **Update, don't just rebuild, when permissions change.** A release that adds a permission (e.g. 4.16.1: Home Assistant API, Supervisor API, access to the HA config folder) only takes effect through *Update*; a *Rebuild* keeps the old permissions.

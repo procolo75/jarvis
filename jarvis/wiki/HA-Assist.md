@@ -11,7 +11,7 @@ model involved — and only what HA does not understand is passed to JARVIS.
 ```
 voice ──► HA Assist pipeline ──► HA local intents ── understood ──► HA acts (lights, switches…)
                                         │
-                                        └─ not understood ──► JARVIS integration ──► add-on /api/assist
+                                        └─ not understood ──► JARVIS integration ──► app /api/assist
                                                                                         │
                        ┌────────────────────────────────────────────────────────────────┘
                        ├─ /rain, /storm, /stations words ──► direct command (no model, no tokens)
@@ -20,13 +20,13 @@ voice ──► HA Assist pipeline ──► HA local intents ── understood 
 
 ## Setup (once)
 
-1. **Update** the add-on (not just rebuild: the new version asks for access to Home Assistant's
+1. **Update** the app (not just rebuild: the new version asks for access to Home Assistant's
    config folder, the Supervisor API and the Home Assistant API, and only an update applies
    permissions). JARVIS copies its integration to `/config/custom_components/jarvis` and sends a
    Telegram message: *restart Home Assistant*.
 2. Restart Home Assistant.
 3. In the JARVIS Web UI, **Settings → 🎙️ HA Assist → Show URL and token**. The URL is
-   `http://<add-on hostname>:8099` — `http://local-jarvis:8099` for a local add-on.
+   `http://<app hostname>:8099` — `http://local-jarvis:8099` for a local app.
 4. *Settings → Devices & services → Add integration → **JARVIS*** and paste URL and token.
    If *Discovered: JARVIS* appears instead, just confirm it: URL and token come with the discovery.
 5. *Settings → Voice assistants* → your assistant → **Conversation agent: JARVIS**, and turn on
@@ -144,13 +144,13 @@ Telegram delivery is unchanged and stays what the monitor tracks: the voice is f
 | Say a test sentence | Speaks on the selected speaker, saved or not. |
 | Status | Integration version, discovery, last question and how long it took. |
 | Test | Re-installs the integration if needed, announces JARVIS again and asks one question (not kept in the history). |
-| Show URL and token | For *Add integration → JARVIS*. Shown only through the add-on page (ingress). |
+| Show URL and token | For *Add integration → JARVIS*. Shown only through the app page (ingress). |
 
 ## Under the hood
 
 | Piece | Where |
 |---|---|
-| HA integration (config flow + conversation agent) | `ha_integration/jarvis/` — copied to `custom_components` by the add-on |
+| HA integration (config flow + conversation agent) | `ha_integration/jarvis/` — copied to `custom_components` by the app |
 | Install, token, discovery | `jarvis/assist.py` — token in `/data/assist_token` |
 | Endpoint called by HA | `POST /api/assist` (`Authorization: Bearer <token>`) in `web/routes/assist.py` |
 | One chat turn, shared with Telegram | `bot/state.py: chat_turn()`; origin of the turn in `state.CHANNEL` |

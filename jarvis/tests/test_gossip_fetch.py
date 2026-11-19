@@ -6,8 +6,9 @@ Reading INGV GOSSIP events.json by its head only — `gossip.py`.
     cd jarvis && python3 -m unittest discover tests
 
 What is pinned, and why it bites:
-  · events.json is the whole two-year catalogue (Campi Flegrei ~7 MB, uncompressed)
-    sorted newest first. The live monitor fetched it every minute — ~375 GB a month,
+  · events.json is the whole two-year catalogue (Campi Flegrei 7.4 MB, Vesuvio 1.3 MB,
+    uncompressed) sorted newest first. The live monitor fetched both every minute —
+    ~375 GB a month,
     found measuring the add-ons' traffic for a data SIM. Only as many Range blocks
     as the period needs may be downloaded, and none at all when the ETag still matches.
 """

@@ -15,8 +15,8 @@
 ## [5.1.2] - 2026-11-19
 
 - **Fix — the live seismic monitor no longer downloads the INGV catalogue every minute.** It
-  fetched each area's whole `events.json` (Campi Flegrei ~7 MB, served uncompressed) every
-  60 s, about 12 GB a day. It now sends `If-None-Match` / `If-Modified-Since` and reuses the
+  fetched each area's whole `events.json` (Campi Flegrei 7.4 MB + Vesuvio 1.3 MB, served
+  uncompressed) every 60 s, about 12.5 GB a day (~375 GB a month). It now sends `If-None-Match` / `If-Modified-Since` and reuses the
   events it already has when INGV answers `304 Not Modified`; a full download happens only
   when a new event is published.
 

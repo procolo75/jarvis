@@ -12,12 +12,21 @@ without knowing which kind of sky it is looking at.
 Why this is a shared singleton and the strike feed is not
 ────────────────────────────────────────────────────────
 A Blitzortung subscription is aimed at an area, so each monitor needs its own.
-One radar product is a single file covering the entire country, so a second
-monitor watching a different town costs exactly nothing extra. Downloading it
+One radar product is a single file covering the entire country. Downloading it
 twice would be pure waste, and downloading it per-monitor would make the request
 rate grow with the number of monitors against a public service that is doing us
 a favour. Hence one instance, reference-counted by its consumers: it runs while
 somebody needs it and stops when the last monitor goes away.
+
+Only the rows the consumers look at
+───────────────────────────────────
+Each consumer passes `area=` to `acquire()`: a callable naming where it looks.
+After the first whole download has taught the feed the grid, it fetches only the
+rows covering those areas (`radar_partial`, HTTP Range on the S3 file) — about a
+quarter of the file for one town — and the rest of the grid holds "no
+measurement". Monitors in different towns cost a band each; when anyone cannot
+say where it looks, or the file will not cooperate, the whole file is downloaded
+as before.
 
 Why polling is scheduled rather than periodic
 ─────────────────────────────────────────────
@@ -38,13 +47,16 @@ makes the core refuse to issue an all-clear it has not earned.
 import asyncio
 import io
 import logging
+import math
+import struct
 import time
 from collections import deque
 
 import httpx
 import numpy as np
 
-from .radar_core import RadarGrid, parse_geotransform
+from .radar_core import RadarGrid, RadarGridError, latlon_to_pixel, parse_geotransform
+from .radar_partial import PartialUnsupported, assemble, covers, fetch_rows, merge_rows
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -98,6 +110,19 @@ FRAME_HISTORY = 2
 MAX_GRID_AGE_SEC = 1500.0
 
 DEFAULT_PERIOD_SEC = 300.0
+
+# ── Rows, not the whole country ───────────────────────────────────────────────
+#
+# Each consumer tells the feed where it looks, as (lat, lon, half_km) squares —
+# see `acquire(area=...)`. Only the rows covering them are downloaded; the rest of
+# the grid holds the fill value (radar_partial). Slack on top of the consumer's
+# own half-width, for the transverse Mercator scale factor across the country.
+ROW_SLACK = 1.02
+# Added by every consumer to its own half-width: how far a phone can move
+# between two downloads, with room to spare (40 km in ~6 min is 400 km/h).
+FEED_MARGIN_KM = 40.0
+# Below this share of the file a partial read is not worth the extra requests.
+PARTIAL_MAX_FRACTION = 0.7
 
 
 def _parse_iso_period(text: str | None) -> float:
@@ -169,6 +194,16 @@ class RadarFeed:
     def __init__(self):
         self._frames: dict[str, deque] = {}
         self._consumers: dict[str, int] = {}
+        # Per product, one area callable per acquire() (None = wants the whole
+        # grid). A callable returns [(lat, lon, half_km), ...] or None.
+        self._areas: dict[str, list] = {}
+        # The grid never changes; learnt from the first whole download and used
+        # to turn areas into rows and to check every partial read against.
+        self._gt: dict = {}
+        self._partial_downloads = 0
+        # Products whose fallback to the whole file has been reported once.
+        self._partial_warned: set[str] = set()
+        self._bytes = 0
         self._period: dict[str, float] = {}
         self._next_due: dict[str, float] = {}
         self._lag: dict[str, float] = {}
@@ -183,27 +218,37 @@ class RadarFeed:
 
     # ── Consumers ─────────────────────────────────────────────────────────────
 
-    def acquire(self, *products: str) -> None:
-        """Register interest in products, starting the loop if it is not running."""
+    def acquire(self, *products: str, area=None) -> None:
+        """Register interest in products, starting the loop if it is not running.
+
+        `area` is a callable returning where this consumer looks, as
+        [(lat, lon, half_km), ...], or None when it cannot say — then the whole
+        grid is downloaded, as it is for a consumer that passes no area at all.
+        """
         for product in products:
             if not product:
                 continue
             self._consumers[product] = self._consumers.get(product, 0) + 1
+            self._areas.setdefault(product, []).append(area)
             self._frames.setdefault(product, deque(maxlen=FRAME_HISTORY))
             self._next_due.setdefault(product, 0.0)
         self.start()
 
-    def release(self, *products: str) -> None:
+    def release(self, *products: str, area=None) -> None:
         """Drop interest. The loop stops — and the rasters are freed — once no
         monitor is watching anything."""
         for product in products:
             if product not in self._consumers:
                 continue
             self._consumers[product] -= 1
+            areas = self._areas.get(product, [])
+            if area in areas:
+                areas.remove(area)
             if self._consumers[product] <= 0:
                 del self._consumers[product]
                 self._frames.pop(product, None)
                 self._next_due.pop(product, None)
+                self._areas.pop(product, None)
         if not self._consumers:
             self.stop()
 
@@ -283,6 +328,8 @@ class RadarFeed:
         return {
             "products": sorted(self._consumers),
             "downloads": self._downloads,
+            "partial_downloads": self._partial_downloads,
+            "bytes": self._bytes,
             "checks": self._checks,
             "errors": self._errors,
             "last_error": self._last_error,
@@ -373,18 +420,88 @@ class RadarFeed:
         if not url:
             raise RuntimeError(f"no download url for {product}")
 
-        # The presigned URL is short-lived and already authenticated; sending our
-        # own headers to S3 would only risk breaking the signature.
-        raw = await client.get(url, headers={})
-        raw.raise_for_status()
+        want = self._wanted_rows(product)
+        grid, nbytes = None, 0
+        if want is not None:
+            grid, nbytes = await self._fetch_partial(client, url, stamp, product, want)
+        if grid is None:
+            # The presigned URL is short-lived and already authenticated; sending our
+            # own headers to S3 would only risk breaking the signature.
+            raw = await client.get(url, headers={})
+            raw.raise_for_status()
+            grid = await asyncio.to_thread(_decode, raw.content, stamp, product)
+            nbytes = len(raw.content)
+            self._gt[product] = grid.gt
+        else:
+            self._partial_downloads += 1
 
-        grid = await asyncio.to_thread(_decode, raw.content, stamp, product)
+        # Motion is measured between the buffered frames at the same pixels, so
+        # an older frame must hold every row the newest one (or the consumers)
+        # rely on. If the rows moved — a phone travelled, a monitor started
+        # elsewhere — drop it: one cycle without motion, never a fabricated one.
+        if buffered and not (covers(buffered[-1].rows, grid.rows)
+                             or (want is not None and covers(buffered[-1].rows, want))):
+            buffered.clear()
         buffered.append(grid)
         self._downloads += 1
-        _LOGGER.info("[Radar] %s %s fetched (%d×%d, %.1f KB, published %.0f min late)",
+        self._bytes += nbytes
+        _LOGGER.info("[Radar] %s %s fetched (%s, %.1f KB, published %.0f min late)",
                      product, time.strftime("%H:%M", time.localtime(stamp)),
-                     grid.gt.cols, grid.gt.rows, len(raw.content) / 1024.0,
-                     lag / 60.0)
+                     (f"{grid.gt.cols}×{grid.gt.rows}" if grid.rows is None else
+                      "rows " + ", ".join(f"{a}-{b}" for a, b in grid.rows)),
+                     nbytes / 1024.0, lag / 60.0)
+
+    def _wanted_rows(self, product: str) -> list[tuple[int, int]] | None:
+        """Rows every consumer of `product` needs, or None for the whole grid.
+
+        None whenever anyone cannot say where it looks, or before the grid is
+        known: the whole grid is the safe answer, and the cost of being unsure.
+        """
+        gt = self._gt.get(product)
+        areas = self._areas.get(product) or []
+        if gt is None or not areas or any(a is None for a in areas):
+            return None
+        intervals = []
+        for area in areas:
+            try:
+                squares = area()
+            except Exception as e:
+                _LOGGER.warning("[Radar] area of a %s consumer failed (%s): whole grid",
+                                product, e)
+                return None
+            if not squares:
+                return None
+            for lat, lon, half_km in squares:
+                _col, row = latlon_to_pixel(gt, lat, lon)
+                half_px = half_km * 1000.0 / gt.pixel_m * ROW_SLACK
+                intervals.append((math.floor(float(row) - half_px) - 1,
+                                  math.ceil(float(row) + half_px) + 2))
+        rows = merge_rows(intervals, gt.rows)
+        return rows or None
+
+    async def _fetch_partial(self, client, url: str, stamp: float, product: str,
+                             want) -> tuple[RadarGrid | None, int]:
+        """The wanted rows, or (None, 0) to fall back to the whole file.
+
+        Network errors propagate as a failed whole download would; anything about
+        the file itself (layout, decoding, a different grid) falls back.
+        """
+        try:
+            reader, parts = await fetch_rows(client, url, want, PARTIAL_MAX_FRACTION)
+            partial = await asyncio.to_thread(assemble, parts, reader.fetched, reader.size)
+            gt = parse_geotransform(partial.tags, partial.cols, partial.rows)
+            if gt != self._gt.get(product):
+                raise PartialUnsupported("geotransform differs from the known grid")
+        except (PartialUnsupported, RadarGridError, ValueError, OSError, KeyError,
+                struct.error) as e:
+            # Visible once per product (the add-on log shows warnings only), quiet
+            # afterwards: a persistent cause would otherwise repeat every 5 minutes.
+            log = _LOGGER.info if product in self._partial_warned else _LOGGER.warning
+            self._partial_warned.add(product)
+            log("[Radar] %s: reading by rows not possible (%s) — whole file", product, e)
+            return None, 0
+        return (RadarGrid(t=stamp, product=product, data=partial.data, gt=gt,
+                          rows=tuple(partial.intervals)), reader.fetched)
 
 
 radar_feed = RadarFeed()
@@ -392,6 +509,6 @@ radar_feed = RadarFeed()
 
 __all__ = [
     "API_BASE", "API_HEADERS", "PRODUCT_RAIN", "PRODUCT_HAIL",
-    "FRAME_HISTORY", "MAX_GRID_AGE_SEC", "DEFAULT_PERIOD_SEC",
+    "FRAME_HISTORY", "MAX_GRID_AGE_SEC", "DEFAULT_PERIOD_SEC", "FEED_MARGIN_KM",
     "RadarFeed", "radar_feed", "fetch_latest",
 ]

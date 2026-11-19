@@ -45,7 +45,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from .geo import azimuth_deg, direction_label, distance_km
 from .position import ORIGIN_FALLBACK, position_manager
-from .radar import PRODUCT_HAIL, radar_feed
+from .radar import FEED_MARGIN_KM, PRODUCT_HAIL, radar_feed
 from .radar_core import coverage_fraction, peak_with_location
 from .snapshot import origin_line
 from .storm_front_core import POLL_INTERVAL_SEC, clamp_radius
@@ -273,7 +273,7 @@ class HailFrontLiveMonitor:
         if self._poll_task and not self._poll_task.done():
             return
         self._restore_state()
-        radar_feed.acquire(PRODUCT_HAIL)
+        radar_feed.acquire(PRODUCT_HAIL, area=self._feed_area)
         self._poll_task = asyncio.create_task(
             self._poll_loop(), name=f"hail_front_poll:{self.monitor_id}")
         print(f"[HailFront] '{self.name}' started (radius={self.radius_km:.0f}km, "
@@ -283,14 +283,14 @@ class HailFrontLiveMonitor:
     def stop(self) -> None:
         if self._poll_task and not self._poll_task.done():
             self._poll_task.cancel()
-        radar_feed.release(PRODUCT_HAIL)
+        radar_feed.release(PRODUCT_HAIL, area=self._feed_area)
         print(f"[HailFront] '{self.name}' stopped")
 
     async def aclose(self) -> None:
         task = self._poll_task
         if task and not task.done():
             task.cancel()
-        radar_feed.release(PRODUCT_HAIL)
+        radar_feed.release(PRODUCT_HAIL, area=self._feed_area)
         if task:
             await asyncio.gather(task, return_exceptions=True)
 
@@ -350,6 +350,26 @@ class HailFrontLiveMonitor:
                 return
             except Exception as e:
                 _LOGGER.error("[HailFront] '%s' poll error: %s", self.name, e)
+
+    def _feed_area(self) -> list[tuple[float, float, float]] | None:
+        """Where the radar feed must have rows for this monitor, or None (whole grid).
+
+        Read-only. The latest fix whatever its age, the configured point and the
+        origin in use, each with the watched disc plus FEED_MARGIN_KM.
+        """
+        points = []
+        if self.position_id:
+            state = position_manager.current(self.position_id)
+            if state is not None:
+                points.append((state.lat, state.lon))
+        if self.latitude or self.longitude:
+            points.append((self.latitude, self.longitude))
+        if self._origin_point and (self._origin_point[0] or self._origin_point[1]):
+            points.append(self._origin_point)
+        if not points:
+            return None
+        half = max(self.radius_km, NEAR_RADIUS_KM) + FEED_MARGIN_KM
+        return [(lat, lon, half) for lat, lon in points]
 
     def _resolve_origin(self, now: float) -> tuple[float, float] | None:
         """Same chain as the rain front: fresh fix, else an old one, else the

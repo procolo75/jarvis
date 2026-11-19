@@ -1227,7 +1227,9 @@ The twin of the storm front, with the national weather radar in place of the lig
 
 ##### The source
 
-The Dipartimento della Protezione Civile publishes an Open Access composite of the 24 national radars. **No API key, no registration, no quota** — and one file covers the whole country, so a second monitor watching a different town costs nothing extra. The feed is a shared singleton, reference-counted by its consumers: it runs while at least one rain front monitor is enabled and stops with the last one.
+The Dipartimento della Protezione Civile publishes an Open Access composite of the 24 national radars. **No API key, no registration, no quota** — and one file covers the whole country. The feed is a shared singleton, reference-counted by its consumers: it runs while at least one rain or hail front monitor is enabled and stops with the last one.
+
+**Only the rows that matter are downloaded.** After the first whole file, the feed reads (HTTP Range) only the band of rows around where the monitors look — fixed coordinates or the phone's latest position — wide enough for the observation disc, advection, the motion box and a moving phone. For one town that is about a quarter of the file (~90 KB instead of ~390 KB per product). Monitors in different towns cost one band each; rows that were not downloaded read as *no measurement*, never as *no rain*. Whenever a monitor cannot say where it looks, or the file or server does not cooperate, the whole file is downloaded as before.
 
 | | |
 |---|---|

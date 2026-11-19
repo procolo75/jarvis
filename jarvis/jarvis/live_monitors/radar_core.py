@@ -171,6 +171,10 @@ class RadarGrid:
     product: str
     data: np.ndarray
     gt: GeoTransform
+    # Half-open row intervals actually measured, or None for the whole grid. Rows
+    # outside them hold the fill value: "not fetched" reads as "no measurement",
+    # never as "no rain" (see radar_partial).
+    rows: tuple[tuple[int, int], ...] | None = None
 
 
 # ── Projection ────────────────────────────────────────────────────────────────

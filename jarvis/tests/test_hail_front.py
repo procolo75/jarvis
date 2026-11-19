@@ -67,11 +67,13 @@ class FakeFeed:
     def feed_ok(self, product, now):
         return self.ok
 
-    def acquire(self, *products):
+    def acquire(self, *products, area=None):
         self.acquired += 1
+        self.area = area
 
-    def release(self, *products):
+    def release(self, *products, area=None):
         self.released += 1
+        self.area = area
 
     def status(self):
         return "running"
@@ -239,6 +241,8 @@ class ConfigTest(unittest.TestCase):
         finally:
             HF.radar_feed = real
         self.assertEqual(feed.released, 1)
+        # The same callable that acquire() registered, so the feed can drop it.
+        self.assertEqual(feed.area, mon._feed_area)
 
 
 class TickTest(unittest.IsolatedAsyncioTestCase):

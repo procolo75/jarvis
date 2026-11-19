@@ -62,11 +62,11 @@ from . import gauges as gauge_source
 from .geo import direction_label, distance_km, offset_km
 from .position import ORIGIN_FALLBACK, position_manager
 from .position_core import MAX_PLAUSIBLE_KMH
-from .radar import PRODUCT_RAIN, radar_feed
+from .radar import FEED_MARGIN_KM, PRODUCT_RAIN, radar_feed
 from .radar_core import (
-    DRIZZLE_MMH, Encounter, build_rain_frame, coverage_fraction, cpa,
-    field_motion, intensity_label, peak_in_disc, rain_points,
-    velocity_components,
+    DRIZZLE_MMH, MOTION_BOX_KM, MOTION_MAX_KMH, Encounter, build_rain_frame,
+    coverage_fraction, cpa, field_motion, intensity_label, peak_in_disc,
+    rain_points, velocity_components,
 )
 from .snapshot import Snapshot, describe_origin, origin_line, preview_alert
 from .storm_front_core import (
@@ -115,6 +115,9 @@ OVERHEAD_RADIUS_KM = 2.0
 # The field is only advected when the motion estimate passed its own gate, so this
 # is a bound against a pathological age, not against a bad velocity.
 MAX_ADVECTION_SEC = 1800.0
+# How far the disc can be carried by advection: the fastest motion field_motion
+# accepts over the longest advection applied. Part of the rows the feed fetches.
+MAX_ADVECTION_KM = MOTION_MAX_KMH * MAX_ADVECTION_SEC / 3600.0
 
 
 # ── Persistent state ──────────────────────────────────────────────────────────
@@ -262,7 +265,7 @@ class RainFrontLiveMonitor:
         if self._poll_task and not self._poll_task.done():
             return
         self._restore_state()
-        radar_feed.acquire(PRODUCT_RAIN)
+        radar_feed.acquire(PRODUCT_RAIN, area=self._feed_area)
         self._poll_task = asyncio.create_task(
             self._poll_loop(), name=f"rain_front_poll:{self.monitor_id}"
         )
@@ -274,14 +277,14 @@ class RainFrontLiveMonitor:
     def stop(self) -> None:
         if self._poll_task and not self._poll_task.done():
             self._poll_task.cancel()
-        radar_feed.release(PRODUCT_RAIN)
+        radar_feed.release(PRODUCT_RAIN, area=self._feed_area)
         print(f"[RainFront] '{self.name}' stopped")
 
     async def aclose(self) -> None:
         task = self._poll_task
         if task and not task.done():
             task.cancel()
-        radar_feed.release(PRODUCT_RAIN)
+        radar_feed.release(PRODUCT_RAIN, area=self._feed_area)
         if task:
             await asyncio.gather(task, return_exceptions=True)
 
@@ -364,6 +367,30 @@ class RainFrontLiveMonitor:
                 _LOGGER.error("[RainFront] '%s' poll error: %s", self.name, e)
 
     # ── Origin ────────────────────────────────────────────────────────────────
+
+    def _feed_area(self) -> list[tuple[float, float, float]] | None:
+        """Where the radar feed must have rows for this monitor, or None (whole grid).
+
+        Read-only — the feed calls it between polls. Every point the next poll might
+        centre on: the latest fix whatever its age (resolve() falls back to it), the
+        configured point, and the origin in use. Around each, everything the poll
+        reads: the observation disc carried by advection, the motion box, and the
+        chart, plus FEED_MARGIN_KM for a phone that keeps moving.
+        """
+        points = []
+        if self.position_id:
+            state = position_manager.current(self.position_id)
+            if state is not None:
+                points.append((state.lat, state.lon))
+        if self.latitude or self.longitude:
+            points.append((self.latitude, self.longitude))
+        if self._origin_point and (self._origin_point[0] or self._origin_point[1]):
+            points.append(self._origin_point)
+        if not points:
+            return None
+        half = max(self.observe_radius_km + MAX_ADVECTION_KM, MOTION_BOX_KM / 2.0) + FEED_MARGIN_KM
+        return [(lat, lon, half) for lat, lon in points]
+
 
     def _resolve_origin(self, now: float) -> tuple[float, float] | None:
         """Where the disc is centred this poll, or None if that is unknown.

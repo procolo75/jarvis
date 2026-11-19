@@ -1,5 +1,32 @@
 # CHANGELOG
 
+## [5.3.0] - 2026-11-19
+
+- **Change — the radar downloads only the rows around your monitors.** The rain and hail
+  front monitors used to download the whole-country DPC product, SRI ~390 KB and POH
+  ~330 KB, every five minutes: about 7 GB a month, almost all of it rows that were
+  decoded and thrown away. The file lives on S3, which honours HTTP Range, and is written
+  one row per strip. After the first whole download has taught it the grid, the shared feed
+  now fetches only the rows covering where its consumers look (new `radar_partial.py`).
+  That is ~90 KB per product for one town, and ~1.8 GB a month.
+  - Each monitor tells the feed where it looks (`acquire(area=...)`). A rain monitor covers
+    the observation disc carried by the longest advection, the motion box and the chart; a
+    hail monitor covers its radius. Both add a margin for a moving phone. With a position,
+    the latest fix whatever its age, the configured point and the origin in use are all
+    covered.
+  - The grid keeps its full size and geotransform. Rows not fetched hold the fill value, so
+    they read as *no measurement*, never as *no rain*: a monitor outside its band goes
+    blind, it does not clear.
+  - The whole file is downloaded as before whenever a monitor cannot say where it looks (no
+    fix and no configured point), before the grid is known, when the bands are most of the
+    file, or when the file or server does not cooperate (tiled, no Range, a different
+    geotransform).
+  - The two frames used for the motion estimate always cover the same rows: if the band
+    moves, the older one is dropped, giving one cycle without motion rather than a mixed pair.
+  - A fallback to the whole file is logged as a warning once per product.
+  - Verified against the live service: the rows read by Range are identical to the same rows
+    of the whole file for both products, with the same geotransform, coverage and peak.
+
 ## [5.2.0] - 2026-11-19
 
 - **Change — the seismic monitors download only the events they need.** INGV GOSSIP

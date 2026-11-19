@@ -307,7 +307,7 @@ The [Dipartimento della Protezione Civile radar platform](https://dpc-radar.read
 | Size | One 1200 × 1400 image covering the whole country, 1 km per pixel |
 | How often | Every 5 minutes |
 
-Because one image covers all of Italy, a second monitor watching a different town **costs nothing extra**: the download is shared between every rain front monitor, and stops entirely when the last one is disabled.
+The download is shared between every rain and hail front monitor, and stops entirely when the last one is disabled. Only the **band of rows around your monitors** is downloaded — fixed coordinates or the phone's latest position — about a quarter of the image for one town; monitors in different towns add a band each. Rows that were not downloaded count as *no measurement*, never as *no rain*.
 
 > **A blind spot is not a dry spell.** Where the radar cannot see, the image contains a marker meaning *"no measurement"*, which the monitor never treats as an absence of rain. Confusing the two would turn the edge of the network into permanent sunshine.
 

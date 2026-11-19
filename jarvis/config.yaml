@@ -1,6 +1,6 @@
 name: JARVIS for Home Assistant
 description: AI orchestrator agent controlled via Telegram
-version: "5.1.1"
+version: "5.2.0"
 slug: jarvis
 init: false
 arch:

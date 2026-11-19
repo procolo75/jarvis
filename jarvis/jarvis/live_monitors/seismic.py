@@ -23,10 +23,13 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import httpx
 
+import gossip
+
 _LOGGER = logging.getLogger(__name__)
 
 POLL_INTERVAL_SEC = 60
-JSON_URL          = "https://terremoti.ov.ingv.it/gossip/{area}/events.json"
+LIVE_MIN_EVENTS   = 60
+LIVE_WINDOW_HOURS = 3
 MAX_AGE_HOURS     = 48
 
 AREA_LABELS = {
@@ -138,6 +141,7 @@ class SeismicLiveMonitor:
         self._was_in_quiet   = False
         self._pending_quiet: list[tuple[dict, bool]] = []
         self._seen: dict[str, dict] = {}
+        self._http_cache: dict[str, dict] = {}
         self._task: asyncio.Task | None = None
         notify_str = "notifications ON" if self._notify_enabled else "logging only"
         print(f"[SeismicMonitor] '{self.name}' init ({notify_str})")
@@ -188,12 +192,13 @@ class SeismicLiveMonitor:
                 await asyncio.sleep(POLL_INTERVAL_SEC)
 
     async def _fetch_area(self, client: httpx.AsyncClient, area: str) -> list[dict]:
-        url = JSON_URL.format(area=area)
+        # Only the head of events.json (the whole two-year catalogue, ~7 MB for Campi Flegrei):
+        # the last LIVE_MIN_EVENTS events and at least LIVE_WINDOW_HOURS, so a swarm does not
+        # push out of reach the Md revision of a quake from an hour ago. Conditional on the
+        # ETag: a minute without news costs a 304 with no body.
+        since = (datetime.now(timezone.utc) - timedelta(hours=LIVE_WINDOW_HOURS)).timestamp()
         try:
-            resp = await client.get(url)
-            resp.raise_for_status()
-            data = resp.json()
-            return data if isinstance(data, list) else []
+            return await gossip.fetch_events(client, area, since, LIVE_MIN_EVENTS, self._http_cache)
         except Exception as e:
             _LOGGER.warning("[SeismicMonitor] '%s' fetch area=%s failed: %s", self.name, area, e)
             return []

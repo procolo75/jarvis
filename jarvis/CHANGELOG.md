@@ -1,5 +1,25 @@
 # CHANGELOG
 
+## [5.2.0] - 2026-11-19
+
+- **Change — the seismic monitors download only the events they need.** INGV GOSSIP
+  `events.json` is the whole two-year catalogue sorted newest first, and its server honours
+  HTTP Range: the new `gossip.py` reads just the head, in 64 KB blocks that double until the
+  period is covered.
+  - Live monitor: the last 60 events and at least the last 3 hours (in a swarm the window
+    widens, so the Md revision of a quake from an hour ago is still seen). With the ETag from
+    5.1.2 a minute without news costs nothing; a new event costs ~64 KB instead of 7.4 MB.
+  - Daily/weekly reports: only the configured period (24 h ≈ 64 KB, a week a few hundred KB).
+    "Last year" and "since year start" are still large: that is the data asked for.
+
+## [5.1.2] - 2026-11-19
+
+- **Fix — the live seismic monitor no longer downloads the INGV catalogue every minute.** It
+  fetched each area's whole `events.json` (Campi Flegrei ~7 MB, served uncompressed) every
+  60 s, about 12 GB a day. It now sends `If-None-Match` / `If-Modified-Since` and reuses the
+  events it already has when INGV answers `304 Not Modified`; a full download happens only
+  when a new event is published.
+
 ## [5.1.1] - 2026-11-18
 
 - **Change — Blink sends only the video.** The photo is gone: it was the camera's home-screen

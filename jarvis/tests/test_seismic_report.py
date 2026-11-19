@@ -56,6 +56,10 @@ def _event(age_h: float, mag: float | None, depth: float | None,
 
 
 class _Response:
+    # A server that ignores Range: the whole (fixture) file comes back.
+    status_code = 200
+    headers: dict = {}
+
     def __init__(self, payload):
         self._payload = payload
 
@@ -78,7 +82,7 @@ class _Client:
     async def __aexit__(self, *exc):
         return False
 
-    async def get(self, url):
+    async def get(self, url, headers=None):
         return _Response(self.payload)
 
 

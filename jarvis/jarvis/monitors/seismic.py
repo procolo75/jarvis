@@ -13,7 +13,8 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import httpx
 
-_BASE_URL = "https://terremoti.ov.ingv.it/gossip/{area}/events.json"
+import gossip
+
 
 _AREA_LABELS = {
     "flegrei":   "Campi Flegrei",
@@ -165,17 +166,12 @@ async def run_seismic_monitor(monitor: dict, tz_name: str = "UTC") -> str:
     except ZoneInfoNotFoundError:
         tz = ZoneInfo("UTC")
 
-    url = _BASE_URL.format(area=area)
-    async with httpx.AsyncClient(timeout=30) as client:
-        resp = await client.get(url)
-        resp.raise_for_status()
-        events = resp.json()
-
-    if not isinstance(events, list):
-        raise ValueError(f"Unexpected response format from INGV API: {type(events)}")
-
     cutoff       = _range_start(time_range, tz)
     cutoff_epoch = cutoff.timestamp()
+
+    # Only as far back as the period asked for, not the whole two-year file.
+    async with httpx.AsyncClient(timeout=30) as client:
+        events = await gossip.fetch_events(client, area, cutoff_epoch)
 
     filtered = [e for e in events if e.get("epoch", 0) >= cutoff_epoch]
     filtered.sort(key=lambda e: e.get("epoch", 0), reverse=True)

@@ -2,7 +2,7 @@
 
 ## Requirements
 
-- Home Assistant with Supervisor (HAOS or Supervised)
+- Home Assistant with Supervisor (HAOS or Supervised) on a 64-bit host: `amd64` (x86-64) or `aarch64` (Raspberry Pi 3/4/5 with HA OS 64-bit)
 - A Telegram bot — created via [@BotFather](https://t.me/BotFather)
 - An API key for at least one supported LLM provider (OpenRouter, OpenAI, GitHub Models, Gemini, Groq, or Cloudflare Workers AI)
 - *(Optional)* A [Tavily](https://tavily.com) API key for the Web Search tool

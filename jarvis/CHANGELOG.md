@@ -1,5 +1,16 @@
 # CHANGELOG
 
+## [5.3.1] - 2026-11-21
+
+- **Fix — JARVIS installs on Raspberry Pi 4 and other ARM64 hosts.** The add-on had no
+  `build.yaml`, so the Supervisor built every architecture from the `Dockerfile` default,
+  `amd64-base-python`. On an aarch64 host the build failed. A new `build.yaml` maps each
+  architecture to its own `base-python:3.13-alpine3.24` image.
+- **Change — supported architectures are now `aarch64` and `amd64` only.** `armhf`, `armv7`
+  and `i386` were listed but never worked, and Home Assistant no longer publishes a Python
+  3.13 / Alpine 3.24 base image for them. A 32-bit Raspberry Pi OS install is not supported;
+  HA OS 64-bit on a Pi 3/4/5 is `aarch64`.
+
 ## [5.3.0] - 2026-11-19
 
 - **Change — the radar downloads only the rows around your monitors.** The rain and hail

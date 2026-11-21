@@ -1,5 +1,14 @@
 # CHANGELOG
 
+## [5.3.2] - 2026-11-21
+
+- **Fix — the install on Raspberry Pi 4 failed at `pip install`.** matplotlib publishes no
+  musllinux wheel for aarch64 (only for x86_64), so pip builds it from source there, and the
+  base image has no compiler. On non-amd64 builds the `Dockerfile` now adds `build-base` and
+  `pkgconf` for that step and removes them in the same layer, and keeps `libstdc++`, which
+  the compiled extensions need at run time. amd64 is unchanged. The first install on a Pi
+  takes noticeably longer because matplotlib is compiled.
+
 ## [5.3.1] - 2026-11-21
 
 - **Fix — JARVIS installs on Raspberry Pi 4 and other ARM64 hosts.** The add-on had no

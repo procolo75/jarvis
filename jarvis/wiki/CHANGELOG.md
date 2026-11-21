@@ -1,5 +1,63 @@
 # CHANGELOG
 
+## [5.3.1] - 2026-11-21
+
+- **Fix — JARVIS installs on Raspberry Pi 4 and other ARM64 hosts.** The add-on had no
+  `build.yaml`, so the Supervisor built every architecture from the `Dockerfile` default,
+  `amd64-base-python`. On an aarch64 host the build failed. A new `build.yaml` maps each
+  architecture to its own `base-python:3.13-alpine3.24` image.
+- **Change — supported architectures are now `aarch64` and `amd64` only.** `armhf`, `armv7`
+  and `i386` were listed but never worked, and Home Assistant no longer publishes a Python
+  3.13 / Alpine 3.24 base image for them. A 32-bit Raspberry Pi OS install is not supported;
+  HA OS 64-bit on a Pi 3/4/5 is `aarch64`.
+
+## [5.3.0] - 2026-11-19
+
+- **Change — the radar downloads only the rows around your monitors.** The rain and hail
+  front monitors used to download the whole-country DPC product, SRI ~390 KB and POH
+  ~330 KB, every five minutes: about 7 GB a month, almost all of it rows that were
+  decoded and thrown away. The file lives on S3, which honours HTTP Range, and is written
+  one row per strip. After the first whole download has taught it the grid, the shared feed
+  now fetches only the rows covering where its consumers look (new `radar_partial.py`).
+  That is ~90 KB per product for one town, and ~1.8 GB a month.
+  - Each monitor tells the feed where it looks (`acquire(area=...)`). A rain monitor covers
+    the observation disc carried by the longest advection, the motion box and the chart; a
+    hail monitor covers its radius. Both add a margin for a moving phone. With a position,
+    the latest fix whatever its age, the configured point and the origin in use are all
+    covered.
+  - The grid keeps its full size and geotransform. Rows not fetched hold the fill value, so
+    they read as *no measurement*, never as *no rain*: a monitor outside its band goes
+    blind, it does not clear.
+  - The whole file is downloaded as before whenever a monitor cannot say where it looks (no
+    fix and no configured point), before the grid is known, when the bands are most of the
+    file, or when the file or server does not cooperate (tiled, no Range, a different
+    geotransform).
+  - The two frames used for the motion estimate always cover the same rows: if the band
+    moves, the older one is dropped, giving one cycle without motion rather than a mixed pair.
+  - A fallback to the whole file is logged as a warning once per product.
+  - Verified against the live service: the rows read by Range are identical to the same rows
+    of the whole file for both products, with the same geotransform, coverage and peak.
+
+## [5.2.0] - 2026-11-19
+
+- **Change — the seismic monitors download only the events they need.** INGV GOSSIP
+  `events.json` is the whole two-year catalogue sorted newest first, and its server honours
+  HTTP Range: the new `gossip.py` reads just the head, in 64 KB blocks that double until the
+  period is covered.
+  - Live monitor: the last 60 events and at least the last 3 hours (in a swarm the window
+    widens, so the Md revision of a quake from an hour ago is still seen). With the ETag from
+    5.1.2 a minute without news costs nothing; a new event costs ~64 KB instead of 7.4 MB.
+  - Daily/weekly reports: only the configured period (24 h ≈ 64 KB, a week a few hundred KB).
+    "Last year" and "since year start" are still large: that is the data asked for.
+
+## [5.1.2] - 2026-11-19
+
+- **Fix — the live seismic monitor no longer downloads the INGV catalogue every minute.** It
+  fetched each area's whole `events.json` (Campi Flegrei 7.4 MB + Vesuvio 1.3 MB, served
+  uncompressed) every 60 s, about 12.5 GB a day (~375 GB a month). It now sends `If-None-Match` / `If-Modified-Since` and reuses the
+  events it already has when INGV answers `304 Not Modified`; a full download happens only
+  when a new event is published.
+
 ## [5.1.1] - 2026-11-18
 
 - **Change — Blink sends only the video.** The photo is gone: it was the camera's home-screen

@@ -189,6 +189,12 @@ This is the "retained message" behaviour: on MQTT connect the broker replays the
 
 ---
 
+## HA Monitor says a sensor is "unavailable" after a Home Assistant restart, but it is not
+
+Home Assistant marks entities `unavailable` / `unknown` while it starts or reloads an integration. Since 5.3.3 these states are alerted only if they last **3 minutes**; a sensor that gets its value back sooner sends nothing. If you still get the alert, the sensor really stayed unavailable for 3 minutes (check its history in HA): a slow integration or a device that is really offline.
+
+---
+
 ## HA Assist
 
 **JARVIS does not appear in *Add integration*.** Restart Home Assistant after the app has copied the integration (Telegram tells you when). Check that the app was **updated**, not rebuilt: the config-folder permission arrives with the update. The log says `[JARVIS] Assist: HA integration installed`.

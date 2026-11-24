@@ -15,7 +15,8 @@ Pipeline per state change:
        - retained AND state doesn't match filter → record silently, no alert
        - retained AND state matches filter (already in alert state) → alert
        - non-retained → always fall through to alert pipeline
-  2. State unchanged → skip
+  2. State unchanged → skip (and drop a pending unavailable/unknown: it was a blip)
+     unavailable / unknown → wait UNAVAILABLE_GRACE s; alert only if still there
   3. State filter — skip if filter_states non-empty and state not in set
   4. Cooldown check — skip if within cooldown window
   5. Alert: LLM mode (call model, fallback to direct on empty) or Direct mode
@@ -38,6 +39,10 @@ import aiomqtt
 _LOGGER = logging.getLogger(__name__)
 
 RECONNECT_DELAY = 15
+# unavailable/unknown must last this long before it is alerted: a Home Assistant
+# restart (minutes on a Raspberry Pi) or an integration reload passes through it.
+UNAVAILABLE_GRACE = 180
+TRANSIENT_STATES = {"unavailable", "unknown"}
 
 
 class HaLiveMonitor:
@@ -63,7 +68,11 @@ class HaLiveMonitor:
         self._llm     = llm_fn
         self._mqtt    = mqtt_cfg
         self._cooldowns: dict[str, float] = {}
-        self._last_states: dict[str, str] = {}
+        self._last_states: dict[str, str] = {}     # last confirmed state
+        self._values: dict[str, str] = {}          # last /state payload
+        self._offline: dict[str, bool] = {}        # last /availability
+        self._pending: dict[str, asyncio.Task] = {}
+        self._pending_state: dict[str, str] = {}
         self._task: asyncio.Task | None = None
 
     def start(self):
@@ -75,6 +84,8 @@ class HaLiveMonitor:
     def stop(self):
         if self._task and not self._task.done():
             self._task.cancel()
+        for entity_id in list(self._pending):
+            self._cancel_pending(entity_id)
 
     def is_running(self) -> bool:
         return self._task is not None and not self._task.done()
@@ -113,36 +124,82 @@ class HaLiveMonitor:
         topic = str(message.topic)
         suffix = topic[len(prefix):].lstrip("/")
 
-        # Resolve entity_id and state from either /state or /availability topic.
-        # mqtt_discoverystream_alt (and z2m) publish availability separately:
-        #   {prefix}/{entity}/availability  payload: "online" | "offline"
-        # We map "offline" → "unavailable" so the standard filter pipeline works.
+        # Each entity has two inputs, kept apart: its /state value and its
+        # /availability (mqtt_discoverystream_alt, z2m: "online" | "offline").
+        # The state the pipeline sees is "unavailable" while availability is
+        # offline, the /state value otherwise. Before 5.3.3 both wrote into one
+        # slot, so a retained "online" and the real value took turns as "the
+        # state" and every switch counted as a change.
         if suffix.endswith("/state"):
             entity_id = suffix[: -len("/state")]
-            state = message.payload.decode("utf-8", errors="replace").strip()
+            if entity_id not in self.entities:
+                return
+            self._values[entity_id] = message.payload.decode("utf-8", errors="replace").strip()
         elif suffix.endswith("/availability"):
             entity_id = suffix[: -len("/availability")]
+            if entity_id not in self.entities:
+                return
             payload = message.payload.decode("utf-8", errors="replace").strip().lower()
-            state = "unavailable" if payload in ("offline", "unavailable") else "online"
+            self._offline[entity_id] = payload in ("offline", "unavailable")
         else:
             return
 
-        if entity_id not in self.entities:
-            return
-
-        if entity_id not in self._last_states:
-            self._last_states[entity_id] = state
-            if message.retain:
-                # Retained snapshot on connect: alert only if a specific filter is set
-                # AND the retained state already matches it (sensor already in alert state).
-                if not self.filter_states or state.lower() not in self.filter_states:
-                    return
-                # else: fall through — sensor already in alert state when monitoring started
-        elif state == self._last_states[entity_id]:
-            return
+        if self._offline.get(entity_id):
+            state = "unavailable"
+        elif entity_id in self._values:
+            state = self._values[entity_id]
         else:
-            self._last_states[entity_id] = state
+            return   # only an "online" availability so far: no state to judge yet
 
+        first = entity_id not in self._last_states
+        if first and message.retain:
+            # Retained snapshot on connect: alert only if a specific filter is set
+            # AND the retained state already matches it (sensor already in alert state).
+            if not self.filter_states or state.lower() not in self.filter_states:
+                self._commit(entity_id, state)
+                return
+        elif not first and state == self._last_states[entity_id]:
+            self._cancel_pending(entity_id)   # back to the confirmed state: it was a blip
+            return
+
+        if state.lower() in TRANSIENT_STATES:
+            # Home Assistant marks entities unavailable/unknown while it restarts or
+            # reloads an integration, and a monitor saved in the web UI reconnects
+            # and reads them again: alert only if the state is still there after
+            # UNAVAILABLE_GRACE seconds. Not committed meanwhile, so a return to
+            # the previous value is no change at all.
+            if self._pending_state.get(entity_id) != state:
+                self._cancel_pending(entity_id)
+                self._pending_state[entity_id] = state
+                self._pending[entity_id] = asyncio.create_task(
+                    self._confirm_later(entity_id, state))
+            return
+
+        self._cancel_pending(entity_id)
+        self._commit(entity_id, state)
+        await self._alert(entity_id, state)
+
+    def _commit(self, entity_id: str, state: str):
+        self._last_states[entity_id] = state
+
+    def _cancel_pending(self, entity_id: str):
+        task = self._pending.pop(entity_id, None)
+        self._pending_state.pop(entity_id, None)
+        if task and not task.done() and task is not asyncio.current_task():
+            task.cancel()
+
+    async def _confirm_later(self, entity_id: str, state: str):
+        await asyncio.sleep(UNAVAILABLE_GRACE)
+        if self._pending_state.get(entity_id) != state:
+            return
+        self._pending.pop(entity_id, None)
+        self._pending_state.pop(entity_id, None)
+        _LOGGER.info("[HAMonitor] '%s' %s still %s after %ds — alerting",
+                     self.name, entity_id, state, UNAVAILABLE_GRACE)
+        self._commit(entity_id, state)
+        await self._alert(entity_id, state)
+
+    async def _alert(self, entity_id: str, state: str):
         if self.filter_states and state.lower() not in self.filter_states:
             return
 

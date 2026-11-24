@@ -1,5 +1,20 @@
 # CHANGELOG
 
+## [5.3.3] - 2026-11-24
+
+- **Fix — HA Monitor sent "unavailable" alerts that were not true.** Home Assistant marks its
+  entities `unavailable` / `unknown` while it restarts (minutes on a Raspberry Pi) and while it
+  reloads an integration, and saving a monitor in the web UI reconnects it and reads those
+  states again. The monitor alerted at the first one. Now `unavailable` and `unknown` are
+  alerted only if they last **3 minutes** (`UNAVAILABLE_GRACE` in `live_monitors/ha.py`); if
+  the entity gets its previous value back sooner, nothing is sent and nothing counts as a
+  change. A sensor that is really down is still alerted, 3 minutes later, with the log line
+  `still unavailable after 180s — alerting`.
+- **Fix — `/state` and `/availability` overwrote each other.** Both wrote into the same "last
+  state", so a retained `online` and the real value took turns and each switch counted as a
+  change. They are now tracked separately: the entity is `unavailable` while its availability
+  is `offline`, its `/state` value otherwise.
+
 ## [5.3.2] - 2026-11-21
 
 - **Fix — the install on Raspberry Pi 4 failed at `pip install`.** matplotlib publishes no

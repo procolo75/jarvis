@@ -6110,7 +6110,7 @@ function renderHaMonitorForm(monitor) {
         <label for="ha-filter-states">State filter</label>
         <input type="text" id="ha-filter-states" placeholder="e.g. on, off, unavailable"
                value="${(monitor.filter_states || []).join(', ')}">
-        <small style="color:var(--text-muted)">Comma-separated list of state values that pass through. Empty = all states trigger the alert pipeline. This filter runs before any LLM call.</small>
+        <small style="color:var(--text-muted)">Comma-separated list of state values that pass through. Empty = all states trigger the alert pipeline. This filter runs before any LLM call. <code>unavailable</code> / <code>unknown</code> are alerted only if they last 3 minutes (Home Assistant restarts pass through them).</small>
       </div>
 
       <div class="form-group">

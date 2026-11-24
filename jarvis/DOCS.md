@@ -1467,6 +1467,8 @@ mqtt_discoverystream_alt:
 2. In the JARVIS Web UI go to **Settings → MQTT / Home Assistant**, fill in broker host/port/credentials, set **Statestream prefix** to `homeassistant`, and click **Save**.
 3. Expand **HA Monitors** → click `+` → 🔍 **Discover** entities → select **Alert mode** → configure LLM instructions or message template → click **Save**.
 
+**`unavailable` / `unknown` must last 3 minutes before they are alerted.** Home Assistant passes its entities through these states while it restarts or reloads an integration, and a monitor saved in the web UI reconnects and reads them again; if the entity gets its previous value back within the 3 minutes nothing is sent. A sensor that is really down is alerted 3 minutes late.
+
 **Configuration fields:**
 
 | Field | Description |

@@ -86,6 +86,7 @@ Sends a fixed Telegram message immediately on state change. Zero LLM cost, zero 
 ## Behaviour Details
 
 - **Retained message on (re)connect**: when the MQTT broker sends a retained message (initial state) on connect, the monitor silently records it as the baseline and does **not** alert. Only subsequent real state changes trigger alerts.
+- **`unavailable` / `unknown` must last 3 minutes before they are alerted.** Home Assistant passes its entities through these states while it restarts or reloads an integration, and a monitor saved in the web UI reconnects and reads them again; if the entity gets its previous value back within the 3 minutes nothing is sent. A sensor that is really down is alerted 3 minutes late. `/state` and `/availability` are tracked separately: the entity is `unavailable` while its availability is `offline`, its `/state` value otherwise.
 - **State filter**: states not in the filter list are discarded before any processing — this prevents unnecessary LLM calls or Telegram messages.
 - **Cooldown**: updated only when an alert is actually sent. A SKIP response (LLM mode) or a filtered state does not update the cooldown.
 
